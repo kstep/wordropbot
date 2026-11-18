@@ -1,10 +1,16 @@
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::Arc,
+    time::Duration,
+};
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
     config::Config,
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
+    import::Normalized,
     quiz::QuizOptions,
     selection::Weights,
     storage::{Candidate, Storage},
@@ -32,6 +38,31 @@ pub trait QuizSender {
     fn clear_keyboard(&self, user: UserId, message: MessageId) -> impl Future<Output = ()> + Send;
 }
 
+/// Distinct translations of one collection, the source of distractors.
+#[derive(Default)]
+struct TranslationPool<'a> {
+    normalized: HashSet<Normalized>,
+    translations: Vec<&'a String>,
+}
+
+impl<'a> TranslationPool<'a> {
+    fn add(&mut self, translation: &'a String) {
+        if self.normalized.insert(Normalized::new(translation)) {
+            self.translations.push(translation);
+        }
+    }
+
+    /// Whether the pool holds `needed` distractors for a word with these
+    /// translations. All of them are in the pool, so the rest are distractors.
+    fn has_distractors(&self, own: &[String], needed: usize) -> bool {
+        let own: HashSet<Normalized> = own
+            .iter()
+            .map(|translation| Normalized::new(translation))
+            .collect();
+        !own.is_empty() && self.normalized.len() - own.len() >= needed
+    }
+}
+
 pub struct ChosenQuiz {
     pub word_id: WordId,
     pub term: String,
@@ -46,41 +77,41 @@ impl ChosenQuiz {
         now: Timestamp,
         rng: &mut R,
     ) -> Option<ChosenQuiz> {
-        let mut weights: Vec<f64> = candidates
-            .iter()
-            .map(|candidate| config.selection.word_weight(&candidate.answers, now))
-            .collect();
         // Distractors come from the word's own collection.
-        let mut pools: HashMap<CollectionId, Vec<&String>> = HashMap::new();
+        let mut pools: HashMap<CollectionId, TranslationPool> = HashMap::new();
         for candidate in candidates {
-            pools
-                .entry(candidate.collection_id)
-                .or_default()
-                .extend(&candidate.translations);
+            let pool = pools.entry(candidate.collection_id).or_default();
+            candidate
+                .translations
+                .iter()
+                .for_each(|translation| pool.add(translation));
         }
-        // Options are built only for the picked word; a word that cannot get
-        // them is zeroed and the pick repeated, which equals picking among
-        // eligible words only.
-        loop {
-            let index = weights.iter().copied().collect::<Weights>().pick(rng)?;
-            let candidate = &candidates[index];
-            let pool = &pools[&candidate.collection_id];
-            match QuizOptions::new(
-                &candidate.translations,
-                pool.iter().copied(),
-                config.quiz.options,
-                rng,
-            ) {
-                Some(options) => {
-                    return Some(ChosenQuiz {
-                        word_id: candidate.word_id,
-                        term: candidate.term.clone(),
-                        options,
-                    });
+        let distractors_needed = config.quiz.options.saturating_sub(1);
+        // Eligibility is decided up front, so the cost stays linear in the
+        // number of words however many of them cannot get options.
+        let weights: Weights = candidates
+            .iter()
+            .map(|candidate| {
+                let pool = &pools[&candidate.collection_id];
+                if pool.has_distractors(&candidate.translations, distractors_needed) {
+                    config.selection.word_weight(&candidate.answers, now)
+                } else {
+                    0.0
                 }
-                None => weights[index] = 0.0,
-            }
-        }
+            })
+            .collect();
+        let candidate = &candidates[weights.pick(rng)?];
+        let options = QuizOptions::new(
+            &candidate.translations,
+            pools[&candidate.collection_id].translations.iter().copied(),
+            config.quiz.options,
+            rng,
+        )?;
+        Some(ChosenQuiz {
+            word_id: candidate.word_id,
+            term: candidate.term.clone(),
+            options,
+        })
     }
 }
 
@@ -277,7 +308,7 @@ impl<S: QuizSender> QuizService<S> {
 
 #[cfg(test)]
 mod tests {
-    use rand::SeedableRng;
+    use rand::{RngCore, SeedableRng};
 
     use super::*;
     use crate::{config::QuizConfig, ids::CollectionId};
@@ -294,6 +325,75 @@ mod tests {
 
     fn ts(secs: i64) -> Timestamp {
         Timestamp::from_secs(secs)
+    }
+
+    /// Counts generator draws: a retry per ineligible word shows up as draws
+    /// growing with the word count, without relying on wall-clock time.
+    struct CountingGenerator {
+        inner: StdRng,
+        draws: usize,
+    }
+
+    impl CountingGenerator {
+        fn new() -> CountingGenerator {
+            CountingGenerator {
+                inner: StdRng::seed_from_u64(1),
+                draws: 0,
+            }
+        }
+    }
+
+    impl RngCore for CountingGenerator {
+        fn next_u32(&mut self) -> u32 {
+            self.draws += 1;
+            self.inner.next_u32()
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.draws += 1;
+            self.inner.next_u64()
+        }
+
+        fn fill_bytes(&mut self, destination: &mut [u8]) {
+            self.draws += 1;
+            self.inner.fill_bytes(destination);
+        }
+    }
+
+    /// Holds every translation of the collection, so it has no distractors.
+    fn candidate_without_distractors(word_id: i64) -> Candidate {
+        Candidate {
+            translations: ["aa", "bb", "cc"].map(String::from).to_vec(),
+            ..candidate(word_id, 10, "term", "aa")
+        }
+    }
+
+    #[test]
+    fn ineligible_words_cost_no_retries() {
+        let candidates: Vec<Candidate> = (0..2000).map(candidate_without_distractors).collect();
+        let mut generator = CountingGenerator::new();
+        let chosen = ChosenQuiz::choose(&candidates, &Config::for_tests(), ts(0), &mut generator);
+        assert!(chosen.is_none());
+        assert_eq!(generator.draws, 0);
+    }
+
+    #[test]
+    fn eligible_word_is_found_among_many_ineligible_without_retries() {
+        let build = |ineligible: i64| -> Vec<Candidate> {
+            let mut candidates: Vec<Candidate> =
+                (0..ineligible).map(candidate_without_distractors).collect();
+            candidates.push(candidate(ineligible, 10, "fits", "dd"));
+            candidates
+        };
+        let draws_for = |candidates: &[Candidate]| {
+            let mut generator = CountingGenerator::new();
+            let chosen =
+                ChosenQuiz::choose(candidates, &Config::for_tests(), ts(0), &mut generator)
+                    .unwrap();
+            assert_eq!(chosen.term, "fits");
+            generator.draws
+        };
+        assert_eq!(draws_for(&build(10)), draws_for(&build(2000)));
     }
 
     #[test]
