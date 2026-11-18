@@ -10,6 +10,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 pub use collections::{CancelledQuiz, Collection, CollectionSummary};
 pub use users::User;
+pub use words::{ImportSummary, WordView};
 
 #[derive(Clone)]
 pub struct Storage {

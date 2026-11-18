@@ -1,3 +1,201 @@
+use std::collections::HashSet;
+
+use super::Storage;
+use super::collections::CancelledQuiz;
+use crate::import::{ParsedPair, normalize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportSummary {
+    pub added: u32,
+    pub updated: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordView {
+    pub id: i64,
+    pub term: String,
+    pub translations: Vec<String>,
+}
+
+impl Storage {
+    /// Merges the pairs into the collection in one transaction. A word counts as
+    /// `updated` only if it existed before this import and gained a translation.
+    pub async fn import_pairs(
+        &self,
+        collection_id: i64,
+        pairs: &[ParsedPair],
+    ) -> Result<ImportSummary, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let mut created = HashSet::new();
+        let mut updated = HashSet::new();
+        for pair in pairs {
+            let inserted: Option<i64> = sqlx::query_scalar(
+                "INSERT INTO words (collection_id, term, term_norm) VALUES (?, ?, ?) \
+                 ON CONFLICT(collection_id, term_norm) DO NOTHING RETURNING id",
+            )
+            .bind(collection_id)
+            .bind(&pair.term)
+            .bind(normalize(&pair.term))
+            .fetch_optional(&mut *tx)
+            .await?;
+            let word_id = match inserted {
+                Some(id) => {
+                    created.insert(id);
+                    id
+                }
+                None => {
+                    sqlx::query_scalar(
+                        "SELECT id FROM words WHERE collection_id = ? AND term_norm = ?",
+                    )
+                    .bind(collection_id)
+                    .bind(normalize(&pair.term))
+                    .fetch_one(&mut *tx)
+                    .await?
+                }
+            };
+            let added = sqlx::query(
+                "INSERT INTO translations (word_id, text, text_norm) VALUES (?, ?, ?) \
+                 ON CONFLICT(word_id, text_norm) DO NOTHING",
+            )
+            .bind(word_id)
+            .bind(&pair.translation)
+            .bind(normalize(&pair.translation))
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0;
+            if added && !created.contains(&word_id) {
+                updated.insert(word_id);
+            }
+        }
+        tx.commit().await?;
+        Ok(ImportSummary {
+            added: created.len() as u32,
+            updated: updated.len() as u32,
+        })
+    }
+
+    pub async fn count_words(&self, collection_id: i64) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
+            .bind(collection_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// Words ordered by normalised term, so paging is stable across spelling case.
+    pub async fn list_words(
+        &self,
+        collection_id: i64,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<WordView>, sqlx::Error> {
+        let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT w.id, w.term, t.text \
+             FROM (SELECT id, term, term_norm FROM words WHERE collection_id = ? \
+                   ORDER BY term_norm, id LIMIT ? OFFSET ?) w \
+             LEFT JOIN translations t ON t.word_id = w.id \
+             ORDER BY w.term_norm, w.id, t.id",
+        )
+        .bind(collection_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut words: Vec<WordView> = Vec::new();
+        for (id, term, text) in rows {
+            if words.last().is_none_or(|w| w.id != id) {
+                words.push(WordView {
+                    id,
+                    term,
+                    translations: Vec::new(),
+                });
+            }
+            if let (Some(w), Some(text)) = (words.last_mut(), text) {
+                w.translations.push(text);
+            }
+        }
+        Ok(words)
+    }
+
+    /// `term` is normalised before the lookup.
+    pub async fn find_word(
+        &self,
+        collection_id: i64,
+        term: &str,
+    ) -> Result<Option<WordView>, sqlx::Error> {
+        let word: Option<(i64, String)> =
+            sqlx::query_as("SELECT id, term FROM words WHERE collection_id = ? AND term_norm = ?")
+                .bind(collection_id)
+                .bind(normalize(term))
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((id, term)) = word else {
+            return Ok(None);
+        };
+        let translations =
+            sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(Some(WordView {
+            id,
+            term,
+            translations,
+        }))
+    }
+
+    /// Deletes the word for all members. Returns `None` if the word does not exist or
+    /// the user is not a member of its collection. Owners of cancelled open quizzes
+    /// get their next quiz scheduled one period from `now`.
+    pub async fn remove_word(
+        &self,
+        user_id: i64,
+        word_id: i64,
+        now: i64,
+    ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let allowed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM words w \
+             JOIN memberships m ON m.collection_id = w.collection_id \
+             WHERE w.id = ? AND m.user_id = ?)",
+        )
+        .bind(word_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !allowed {
+            return Ok(None);
+        }
+        let open: Vec<(i64, Option<i32>)> = sqlx::query_as(
+            "SELECT user_id, message_id FROM quizzes WHERE word_id = ? AND answered_at IS NULL",
+        )
+        .bind(word_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE users SET next_quiz_at = ? + period_secs WHERE id IN \
+             (SELECT user_id FROM quizzes WHERE word_id = ? AND answered_at IS NULL)",
+        )
+        .bind(now)
+        .bind(word_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM words WHERE id = ?")
+            .bind(word_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(
+            open.into_iter()
+                .map(|(user_id, message_id)| CancelledQuiz {
+                    user_id,
+                    message_id,
+                })
+                .collect(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::import::ParsedPair;
@@ -52,7 +250,10 @@ mod tests {
         s.import_pairs(c, &[pair("run", "бежать")]).await.unwrap();
         let same = s.import_pairs(c, &[pair("run", "бежать")]).await.unwrap();
         assert_eq!((same.added, same.updated), (0, 0));
-        let new = s.import_pairs(c, &[pair("run", "управлять")]).await.unwrap();
+        let new = s
+            .import_pairs(c, &[pair("run", "управлять")])
+            .await
+            .unwrap();
         assert_eq!((new.added, new.updated), (0, 1));
     }
 
@@ -67,7 +268,9 @@ mod tests {
             .unwrap()
             .id;
         s.import_pairs(a, &[pair("run", "бежать")]).await.unwrap();
-        s.import_pairs(b, &[pair("run", "управлять")]).await.unwrap();
+        s.import_pairs(b, &[pair("run", "управлять")])
+            .await
+            .unwrap();
         assert_eq!(
             s.find_word(a, "run").await.unwrap().unwrap().translations,
             ["бежать"]
@@ -127,7 +330,19 @@ mod tests {
                 message_id: Some(77)
             }]
         );
-        assert_eq!(s.ensure_user(2, Period::from_secs(5).unwrap(), 0).await.unwrap().next_quiz_at, 1100);
-        assert_eq!(s.ensure_user(1, Period::from_secs(5).unwrap(), 0).await.unwrap().next_quiz_at, 0);
+        assert_eq!(
+            s.ensure_user(2, Period::from_secs(5).unwrap(), 0)
+                .await
+                .unwrap()
+                .next_quiz_at,
+            1100
+        );
+        assert_eq!(
+            s.ensure_user(1, Period::from_secs(5).unwrap(), 0)
+                .await
+                .unwrap()
+                .next_quiz_at,
+            0
+        );
     }
 }
