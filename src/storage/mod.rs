@@ -1,4 +1,5 @@
 mod collections;
+mod quizzes;
 mod users;
 mod words;
 
