@@ -6,6 +6,10 @@ use std::{
 };
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task,
+};
 
 use crate::{
     config::Config,
@@ -16,6 +20,10 @@ use crate::{
     storage::{Candidate, Storage},
     time::Timestamp,
 };
+
+/// Each selection can hold a blocking thread and a user's whole vocabulary in
+/// memory, so only a few run at once.
+const MAX_CONCURRENT_SELECTIONS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendError {
@@ -40,31 +48,6 @@ pub trait QuizSender {
     fn clear_keyboard(&self, user: UserId, message: MessageId) -> impl Future<Output = ()> + Send;
 }
 
-/// Distinct translations of one collection, the source of distractors.
-#[derive(Default)]
-struct TranslationPool<'a> {
-    normalized: HashSet<Normalized>,
-    translations: Vec<&'a String>,
-}
-
-impl<'a> TranslationPool<'a> {
-    fn add(&mut self, translation: &'a String) {
-        if self.normalized.insert(Normalized::new(translation)) {
-            self.translations.push(translation);
-        }
-    }
-
-    /// Whether the pool holds `needed` distractors for a word with these
-    /// translations. All of them are in the pool, so the rest are distractors.
-    fn has_distractors(&self, own: &[String], needed: usize) -> bool {
-        let own: HashSet<Normalized> = own
-            .iter()
-            .map(|translation| Normalized::new(translation))
-            .collect();
-        !own.is_empty() && self.normalized.len() - own.len() >= needed
-    }
-}
-
 pub struct ChosenQuiz {
     pub word_id: WordId,
     pub term: String,
@@ -79,23 +62,13 @@ impl ChosenQuiz {
         now: Timestamp,
         random_generator: &mut R,
     ) -> Option<ChosenQuiz> {
-        // Distractors come from the word's own collection.
-        let mut pools: HashMap<CollectionId, TranslationPool> = HashMap::new();
-        for candidate in candidates {
-            let pool = pools.entry(candidate.collection_id).or_default();
-            candidate
-                .translations
-                .iter()
-                .for_each(|translation| pool.add(translation));
-        }
         let distractors_needed = config.quiz.options.saturating_sub(1);
-        // Eligibility is decided up front, so the cost stays linear in the
-        // number of words however many of them cannot get options.
+        let eligible = ChosenQuiz::eligible_words(candidates, distractors_needed);
         let weights: Weights = candidates
             .iter()
-            .map(|candidate| {
-                let pool = &pools[&candidate.collection_id];
-                if pool.has_distractors(&candidate.translations, distractors_needed) {
+            .zip(&eligible)
+            .map(|(candidate, &is_eligible)| {
+                if is_eligible {
                     config.selection.word_weight(&candidate.answers, now)
                 } else {
                     0.0
@@ -103,9 +76,14 @@ impl ChosenQuiz {
             })
             .collect();
         let candidate = &candidates[weights.pick(random_generator)?];
+        // Distractors come from the word's own collection.
+        let pool = candidates
+            .iter()
+            .filter(|other| other.collection_id == candidate.collection_id)
+            .flat_map(|other| &other.translations);
         let options = QuizOptions::new(
             &candidate.translations,
-            pools[&candidate.collection_id].translations.iter().copied(),
+            pool,
             config.quiz.options,
             random_generator,
         )?;
@@ -115,6 +93,59 @@ impl ChosenQuiz {
             options,
         })
     }
+
+    /// Whether each candidate can get `distractors_needed` distractors from its
+    /// collection.
+    fn eligible_words(candidates: &[Candidate], distractors_needed: usize) -> Vec<bool> {
+        let mut collections: HashMap<CollectionId, Vec<usize>> = HashMap::new();
+        for (position, candidate) in candidates.iter().enumerate() {
+            collections
+                .entry(candidate.collection_id)
+                .or_default()
+                .push(position);
+        }
+        let mut eligible = vec![false; candidates.len()];
+        for positions in collections.values() {
+            let longest = positions
+                .iter()
+                .map(|&position| candidates[position].translations.len())
+                .max()
+                .unwrap_or(0);
+            // With this many distinct translations every word has enough
+            // others, so normalizing the rest of the collection would change
+            // nothing.
+            let enough = longest + distractors_needed;
+            let mut distinct: HashSet<Normalized> = HashSet::new();
+            let mut own_counts = Vec::with_capacity(positions.len());
+            for &position in positions {
+                if distinct.len() >= enough {
+                    break;
+                }
+                let own: HashSet<Normalized> = candidates[position]
+                    .translations
+                    .iter()
+                    .map(|translation| Normalized::new(translation))
+                    .collect();
+                own_counts.push(own.len());
+                distinct.extend(own);
+            }
+            let is_saturated = distinct.len() >= enough;
+            for (index, &position) in positions.iter().enumerate() {
+                let has_translations = !candidates[position].translations.is_empty();
+                eligible[position] = has_translations
+                    && (is_saturated || distinct.len() - own_counts[index] >= distractors_needed);
+            }
+        }
+        eligible
+    }
+}
+
+/// What choosing a word for the user came to.
+enum Selection {
+    Chosen(ChosenQuiz),
+    NoEligibleWords,
+    /// The selection task died; already logged.
+    Failed,
 }
 
 /// What an attempt to send a quiz to the user did.
@@ -134,6 +165,10 @@ pub struct QuizService<S> {
     storage: Storage,
     sender: S,
     config: Arc<Config>,
+    selections: Arc<Semaphore>,
+    /// Runs inside the selection task, to observe or disturb it.
+    #[cfg(test)]
+    selection_probe: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl<S: QuizSender> QuizService<S> {
@@ -142,6 +177,9 @@ impl<S: QuizSender> QuizService<S> {
             storage,
             sender,
             config,
+            selections: Arc::new(Semaphore::new(MAX_CONCURRENT_SELECTIONS)),
+            #[cfg(test)]
+            selection_probe: None,
         }
     }
 
@@ -153,17 +191,16 @@ impl<S: QuizSender> QuizService<S> {
         self.config.schedule.tick_seconds.as_duration()
     }
 
-    /// Whether the user has any word a quiz can be built for.
+    /// Whether the user has any word a quiz can be built for. A failed check
+    /// answers `true`, so the user is not told to add words they already have.
     pub async fn has_eligible_words(
         &self,
         user: UserId,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
         let mut random_generator = StdRng::from_os_rng();
-        Ok(self
-            .choose_quiz(user, now, &mut random_generator)
-            .await?
-            .is_some())
+        let selection = self.choose_quiz(user, now, &mut random_generator).await?;
+        Ok(!matches!(selection, Selection::NoEligibleWords))
     }
 
     /// Scheduler path of `dispatch`: pause and schedule are checked again
@@ -221,8 +258,10 @@ impl<S: QuizSender> QuizService<S> {
         if self.storage.open_quiz(user).await?.is_some() {
             return Ok(DispatchOutcome::AlreadyOpen);
         }
-        let Some(chosen) = self.choose_quiz(user, now, random_generator).await? else {
-            return Ok(DispatchOutcome::NoEligibleWords);
+        let chosen = match self.choose_quiz(user, now, random_generator).await? {
+            Selection::Chosen(chosen) => chosen,
+            Selection::NoEligibleWords => return Ok(DispatchOutcome::NoEligibleWords),
+            Selection::Failed => return Ok(DispatchOutcome::Failed),
         };
         let Some(quiz_id) = self
             .storage
@@ -274,22 +313,58 @@ impl<S: QuizSender> QuizService<S> {
         user: UserId,
         now: Timestamp,
         random_generator: &mut StdRng,
-    ) -> Result<Option<ChosenQuiz>, sqlx::Error> {
+    ) -> Result<Selection, sqlx::Error> {
         let options = self.config.quiz.options;
         if !self
             .storage
             .has_enough_distinct_translations(user, options)
             .await?
         {
-            return Ok(None);
+            return Ok(Selection::NoEligibleWords);
         }
+        // Taken before loading: the candidates are what fills the memory.
+        let Ok(permit) = Arc::clone(&self.selections).acquire_owned().await else {
+            tracing::error!(%user, "quiz selection is shut down");
+            return Ok(Selection::Failed);
+        };
         let candidates = self.storage.candidates(user).await?;
-        Ok(ChosenQuiz::choose(
-            &candidates,
-            &self.config,
-            now,
-            random_generator,
-        ))
+        Ok(self
+            .select_off_async_workers(user, candidates, now, random_generator, permit)
+            .await)
+    }
+
+    /// Handlers of all users share one task, so CPU work here would stall them
+    /// all. A panic stays inside the blocking task and fails this user only.
+    async fn select_off_async_workers(
+        &self,
+        user: UserId,
+        candidates: Vec<Candidate>,
+        now: Timestamp,
+        random_generator: &mut StdRng,
+        permit: OwnedSemaphorePermit,
+    ) -> Selection {
+        let config = Arc::clone(&self.config);
+        let mut task_generator = StdRng::from_rng(random_generator);
+        #[cfg(test)]
+        let probe = self.selection_probe.clone();
+        let selection = task::spawn_blocking(move || {
+            // Held to the end even if the caller stops waiting for the result.
+            let _permit = permit;
+            #[cfg(test)]
+            if let Some(probe) = probe {
+                probe();
+            }
+            ChosenQuiz::choose(&candidates, &config, now, &mut task_generator)
+        })
+        .await;
+        match selection {
+            Ok(Some(chosen)) => Selection::Chosen(chosen),
+            Ok(None) => Selection::NoEligibleWords,
+            Err(error) => {
+                tracing::error!(%user, %error, "quiz selection failed");
+                Selection::Failed
+            }
+        }
     }
 
     async fn handle_send_error(
@@ -321,14 +396,21 @@ impl<S: QuizSender> QuizService<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
+
     use rand::{RngCore, SeedableRng};
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::{
         config::QuizConfig,
         import::ParsedPair,
         period::Period,
-        testing::{FAKE_MESSAGE_ID, QuizFixture, timestamp},
+        testing::{FAKE_MESSAGE_ID, FakeSender, QuizFixture, timestamp},
     };
 
     pub fn candidate(word_id: i64, collection_id: i64, term: &str, translation: &str) -> Candidate {
@@ -691,5 +773,201 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn eligibility_matches_exhaustive_check() {
+        let mut random_generator = StdRng::seed_from_u64(5);
+        let vocabulary = ["aa", "AA", " aa ", "bb", "cc", "dd", "ee", "ff"];
+        for _ in 0..500 {
+            let candidates: Vec<Candidate> = (0..random_generator.random_range(1..12))
+                .map(|word_id| Candidate {
+                    translations: (0..random_generator.random_range(0..4))
+                        .map(|_| {
+                            vocabulary[random_generator.random_range(0..vocabulary.len())]
+                                .to_owned()
+                        })
+                        .collect(),
+                    ..candidate(word_id, random_generator.random_range(1..3), "term", "aa")
+                })
+                .collect();
+            let needed = random_generator.random_range(1..4);
+            let expected: Vec<bool> = candidates
+                .iter()
+                .map(|word| {
+                    let normalized = |other: &Candidate| -> HashSet<Normalized> {
+                        other
+                            .translations
+                            .iter()
+                            .map(|translation| Normalized::new(translation))
+                            .collect()
+                    };
+                    let own = normalized(word);
+                    let others: HashSet<Normalized> = candidates
+                        .iter()
+                        .filter(|other| other.collection_id == word.collection_id)
+                        .flat_map(normalized)
+                        .filter(|translation| !own.contains(translation))
+                        .collect();
+                    !own.is_empty() && others.len() >= needed
+                })
+                .collect();
+            assert_eq!(
+                ChosenQuiz::eligible_words(&candidates, needed),
+                expected,
+                "{candidates:?} needing {needed}"
+            );
+        }
+    }
+
+    /// Blocks the selection task until the test releases it, recording whether
+    /// the release arrived while the task was waiting.
+    struct HeldSelection {
+        entered: oneshot::Receiver<()>,
+        release: mpsc::Sender<()>,
+        was_released: Arc<AtomicBool>,
+    }
+
+    impl HeldSelection {
+        fn install(service: &mut QuizService<FakeSender>) -> HeldSelection {
+            let (entered_sender, entered) = oneshot::channel();
+            let (release, released) = mpsc::channel();
+            let was_released = Arc::new(AtomicBool::new(false));
+            let entered_sender = Mutex::new(Some(entered_sender));
+            let released = Mutex::new(released);
+            let record = Arc::clone(&was_released);
+            service.selection_probe = Some(Arc::new(move || {
+                if let Some(sender) = entered_sender.lock().unwrap().take() {
+                    let _ = sender.send(());
+                }
+                let waited = released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+                record.store(waited.is_ok(), Ordering::SeqCst);
+            }));
+            HeldSelection {
+                entered,
+                release,
+                was_released,
+            }
+        }
+
+        /// On this single-threaded runtime the release can only be sent if the
+        /// selection left the thread free for other tasks.
+        async fn assert_other_work_runs<T>(self, selection: impl Future<Output = T>) -> T {
+            let HeldSelection {
+                entered,
+                release,
+                was_released,
+            } = self;
+            let other_work = async move {
+                entered.await.unwrap();
+                release.send(()).unwrap();
+            };
+            let (result, ()) = tokio::join!(selection, other_work);
+            assert!(was_released.load(Ordering::SeqCst));
+            result
+        }
+    }
+
+    #[tokio::test]
+    async fn other_work_runs_during_selection_for_every_caller() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        let mut service = fixture.service();
+        let held = HeldSelection::install(&mut service);
+        let eligible = held
+            .assert_other_work_runs(service.has_eligible_words(UserId(1), timestamp(100)))
+            .await;
+        assert!(eligible.unwrap());
+
+        let held = HeldSelection::install(&mut service);
+        let mut random_generator = fixture.random_generator();
+        let outcome = held
+            .assert_other_work_runs(service.dispatch(
+                UserId(1),
+                timestamp(100),
+                &mut random_generator,
+            ))
+            .await;
+        assert_eq!(outcome.unwrap(), DispatchOutcome::Sent);
+
+        let fixture = QuizFixture::with_words(1, 4).await;
+        let mut service = fixture.service();
+        let held = HeldSelection::install(&mut service);
+        let mut random_generator = fixture.random_generator();
+        let outcome = held
+            .assert_other_work_runs(service.request_quiz(
+                UserId(1),
+                timestamp(100),
+                &mut random_generator,
+            ))
+            .await;
+        assert_eq!(outcome.unwrap(), DispatchOutcome::Sent);
+    }
+
+    #[tokio::test]
+    async fn selection_panic_fails_only_that_attempt() {
+        let fixture = QuizFixture::with_words(2, 4).await;
+        let mut service = fixture.service();
+        service.selection_probe = Some(Arc::new(|| panic!("selection failure under test")));
+        for _ in 0..=MAX_CONCURRENT_SELECTIONS {
+            let outcome = service
+                .dispatch(UserId(1), timestamp(100), &mut fixture.random_generator())
+                .await
+                .unwrap();
+            assert_eq!(outcome, DispatchOutcome::Failed);
+        }
+        assert!(
+            service
+                .has_eligible_words(UserId(1), timestamp(100))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Every permit came back, so later selections still run.
+        service.selection_probe = None;
+        let outcome = service
+            .dispatch(UserId(2), timestamp(100), &mut fixture.random_generator())
+            .await
+            .unwrap();
+        assert_eq!(outcome, DispatchOutcome::Sent);
+    }
+
+    #[tokio::test]
+    async fn concurrent_selections_stay_within_limit() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        let mut service = fixture.service();
+        let running = Arc::new(AtomicUsize::new(0));
+        let highest = Arc::new(AtomicUsize::new(0));
+        let (running_count, highest_count) = (Arc::clone(&running), Arc::clone(&highest));
+        service.selection_probe = Some(Arc::new(move || {
+            let now_running = running_count.fetch_add(1, Ordering::SeqCst) + 1;
+            highest_count.fetch_max(now_running, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            running_count.fetch_sub(1, Ordering::SeqCst);
+        }));
+        let tasks: Vec<_> = (0..3 * MAX_CONCURRENT_SELECTIONS)
+            .map(|_| {
+                let service = service.clone();
+                tokio::spawn(async move {
+                    service
+                        .has_eligible_words(UserId(1), timestamp(100))
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        for task in tasks {
+            assert!(task.await.unwrap());
+        }
+        assert!(highest.load(Ordering::SeqCst) <= MAX_CONCURRENT_SELECTIONS);
     }
 }
