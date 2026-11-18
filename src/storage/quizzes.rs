@@ -95,7 +95,7 @@ impl Storage {
     /// the user's own answers. Reads each table once instead of once per word.
     pub async fn candidates(&self, user_id: UserId) -> Result<Vec<Candidate>, sqlx::Error> {
         let loaded = self.load_candidates(user_id, None).await?;
-        Ok(loaded.into_iter().map(|l| l.candidate).collect())
+        Ok(loaded.into_iter().map(|item| item.candidate).collect())
     }
 
     async fn load_candidates(
@@ -229,14 +229,14 @@ impl Storage {
         chosen_index: usize,
         now: Timestamp,
     ) -> Result<AnswerOutcome, sqlx::Error> {
-        let mut tx = self.begin_write().await?;
+        let mut transaction = self.begin_write().await?;
         let row: Option<(WordId, String, i64)> = sqlx::query_as(
             "SELECT word_id, options, correct_index FROM quizzes \
              WHERE id = ? AND user_id = ? AND answered_at IS NULL",
         )
         .bind(quiz_id)
         .bind(user_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *transaction)
         .await?;
         let Some((word_id, options, correct_index)) = row else {
             return Ok(AnswerOutcome::Closed);
@@ -255,22 +255,22 @@ impl Storage {
         .bind(is_correct)
         .bind(quiz_id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&mut *transaction)
         .await?;
         if updated.rows_affected() == 0 {
             return Ok(AnswerOutcome::Closed);
         }
-        Storage::reschedule(&mut tx, user_id, now).await?;
+        Storage::reschedule(&mut transaction, user_id, now).await?;
         let term: String = sqlx::query_scalar("SELECT term FROM words WHERE id = ?")
             .bind(word_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *transaction)
             .await?;
         let translations: Vec<String> =
             sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
                 .bind(word_id)
-                .fetch_all(&mut *tx)
+                .fetch_all(&mut *transaction)
                 .await?;
-        tx.commit().await?;
+        transaction.commit().await?;
         Ok(AnswerOutcome::Answered {
             is_correct,
             term,
@@ -285,19 +285,19 @@ impl Storage {
         user_id: UserId,
         now: Timestamp,
     ) -> Result<Option<CancelledQuiz>, sqlx::Error> {
-        let mut tx = self.begin_write().await?;
+        let mut transaction = self.begin_write().await?;
         let deleted: Option<(UserId, Option<MessageId>)> = sqlx::query_as(
             "DELETE FROM quizzes WHERE user_id = ? AND answered_at IS NULL \
              RETURNING user_id, message_id",
         )
         .bind(user_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *transaction)
         .await?;
         let Some((user_id, message_id)) = deleted else {
             return Ok(None);
         };
-        Storage::reschedule(&mut tx, user_id, now).await?;
-        tx.commit().await?;
+        Storage::reschedule(&mut transaction, user_id, now).await?;
+        transaction.commit().await?;
         Ok(Some(CancelledQuiz {
             user_id,
             message_id,
@@ -318,7 +318,7 @@ impl Storage {
         user_id: UserId,
         collection_id: CollectionId,
         now: Timestamp,
-        cfg: &SelectionConfig,
+        selection: &SelectionConfig,
     ) -> Result<CollectionStats, sqlx::Error> {
         let word_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
@@ -334,7 +334,7 @@ impl Storage {
             correct += answers.iter().filter(|answer| answer.is_correct).count() as i64;
             if !answers.is_empty() {
                 ranked.push((
-                    cfg.error_rate(answers, now),
+                    selection.error_rate(answers, now),
                     item.term_norm,
                     item.candidate.term,
                 ));
@@ -368,25 +368,26 @@ mod tests {
     use crate::period::Period;
     use crate::storage::Storage;
     use crate::storage::testing::*;
+    use sqlx::Error;
 
     const PERIOD: i64 = 600;
 
     struct Fixture {
-        s: Storage,
+        storage: Storage,
         word: WordId,
         collection: CollectionId,
         code: Code,
-        opts: Vec<String>,
+        options: Vec<String>,
     }
 
-    fn pair(t: &str, r: &str) -> ParsedPair {
+    fn pair(term: &str, translation: &str) -> ParsedPair {
         ParsedPair {
-            term: t.into(),
-            translation: r.into(),
+            term: term.into(),
+            translation: translation.into(),
         }
     }
 
-    fn cfg() -> SelectionConfig {
+    fn selection_config() -> SelectionConfig {
         SelectionConfig {
             half_life_days: 14.0,
             prior_error: 0.5,
@@ -396,49 +397,60 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
-        let s = Storage::in_memory().await;
+        let storage = Storage::in_memory().await;
         let period = Period::from_secs(PERIOD as u64).unwrap();
-        s.ensure_user(uid(1), period, ts(0)).await.unwrap();
-        s.ensure_user(uid(2), period, ts(0)).await.unwrap();
+        storage.ensure_user(uid(1), period, ts(0)).await.unwrap();
+        storage.ensure_user(uid(2), period, ts(0)).await.unwrap();
         let code: Code = "K7QM-3XPA".parse().unwrap();
-        let collection = s
+        let collection = storage
             .create_collection(uid(1), "A", &code, ts(0))
             .await
             .unwrap()
             .unwrap()
             .id;
-        s.join_collection(uid(2), &code, ts(0))
+        storage
+            .join_collection(uid(2), &code, ts(0))
             .await
             .unwrap()
             .unwrap();
-        s.import_pairs(
-            collection,
-            &[pair("run", "бежать"), pair("run", "управлять")],
-        )
-        .await
-        .unwrap();
-        let word = s.find_word(collection, "run").await.unwrap().unwrap().id;
-        let opts = ["бежать", "груша", "стол"].map(String::from).to_vec();
+        storage
+            .import_pairs(
+                collection,
+                &[pair("run", "бежать"), pair("run", "управлять")],
+            )
+            .await
+            .unwrap();
+        let word = storage
+            .find_word(collection, "run")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let options = ["бежать", "груша", "стол"].map(String::from).to_vec();
         Fixture {
-            s,
+            storage,
             word,
             collection,
             code,
-            opts,
+            options,
         }
     }
 
     #[tokio::test]
     async fn only_one_open_quiz() {
-        let f = fixture().await;
+        let fixture = fixture().await;
         assert!(
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
+            fixture
+                .storage
+                .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
                 .await
                 .unwrap()
                 .is_some()
         );
         assert!(
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(11))
+            fixture
+                .storage
+                .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(11))
                 .await
                 .unwrap()
                 .is_none()
@@ -447,31 +459,47 @@ mod tests {
 
     #[tokio::test]
     async fn answer_counts_once_and_reschedules() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(
-            f.s.answer_quiz(q, uid(1), 0, ts(100)).await.unwrap(),
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), 0, ts(100))
+                .await
+                .unwrap(),
             AnswerOutcome::Answered {
                 is_correct: true,
                 ..
             }
         ));
         assert!(matches!(
-            f.s.answer_quiz(q, uid(1), 1, ts(101)).await.unwrap(),
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), 1, ts(101))
+                .await
+                .unwrap(),
             AnswerOutcome::Closed
         ));
         assert_eq!(
-            f.s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            fixture
+                .storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(100 + PERIOD)
         );
-        let c = f.s.candidates(uid(1)).await.unwrap();
+        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
         assert_eq!(
-            c.iter()
-                .find(|c| c.word_id == f.word)
+            candidates
+                .iter()
+                .find(|candidates| candidates.word_id == fixture.word)
                 .unwrap()
                 .answers
                 .len(),
@@ -481,18 +509,23 @@ mod tests {
 
     #[tokio::test]
     async fn answer_reports_word_and_choice() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
         let AnswerOutcome::Answered {
             is_correct,
             term,
             translations,
             chosen,
-        } = f.s.answer_quiz(q, uid(1), 1, ts(100)).await.unwrap()
+        } = fixture
+            .storage
+            .answer_quiz(quiz, uid(1), 1, ts(100))
+            .await
+            .unwrap()
         else {
             panic!("quiz must be open");
         };
@@ -504,120 +537,198 @@ mod tests {
 
     #[tokio::test]
     async fn stranger_cannot_answer() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(
-            f.s.answer_quiz(q, uid(2), 0, ts(100)).await.unwrap(),
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(2), 0, ts(100))
+                .await
+                .unwrap(),
             AnswerOutcome::Closed
         ));
-        assert!(f.s.open_quiz(uid(1)).await.unwrap().is_some());
+        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn out_of_range_choice_is_rejected() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(
-            f.s.answer_quiz(q, uid(1), 99, ts(100)).await.unwrap(),
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), 99, ts(100))
+                .await
+                .unwrap(),
             AnswerOutcome::Closed
         ));
-        assert!(f.s.open_quiz(uid(1)).await.unwrap().is_some());
+        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
         assert_eq!(
-            f.s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            fixture
+                .storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(0)
         );
     }
 
     #[tokio::test]
     async fn skip_leaves_no_history() {
-        let f = fixture().await;
-        f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
+        let fixture = fixture().await;
+        fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
             .await
             .unwrap()
             .unwrap();
-        assert!(f.s.skip_quiz(uid(1), ts(100)).await.unwrap().is_some());
-        assert!(f.s.skip_quiz(uid(1), ts(100)).await.unwrap().is_none());
+        assert!(
+            fixture
+                .storage
+                .skip_quiz(uid(1), ts(100))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .storage
+                .skip_quiz(uid(1), ts(100))
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
-            f.s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            fixture
+                .storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(100 + PERIOD)
         );
         assert!(
-            f.s.candidates(uid(1))
+            fixture
+                .storage
+                .candidates(uid(1))
                 .await
                 .unwrap()
                 .iter()
-                .all(|c| c.answers.is_empty())
+                .all(|candidates| candidates.answers.is_empty())
         );
     }
 
     #[tokio::test]
     async fn skip_without_quiz_changes_nothing() {
-        let f = fixture().await;
-        assert!(f.s.skip_quiz(uid(1), ts(100)).await.unwrap().is_none());
+        let fixture = fixture().await;
+        assert!(
+            fixture
+                .storage
+                .skip_quiz(uid(1), ts(100))
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
-            f.s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            fixture
+                .storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(0)
         );
     }
 
     #[tokio::test]
     async fn removing_word_cancels_other_members_quiz() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(2), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
-        f.s.remove_word(uid(1), f.word, ts(100))
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
             .await
             .unwrap()
             .unwrap();
-        assert!(f.s.open_quiz(uid(2)).await.unwrap().is_none());
+        fixture
+            .storage
+            .remove_word(uid(1), fixture.word, ts(100))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
         assert!(matches!(
-            f.s.answer_quiz(q, uid(2), 0, ts(101)).await.unwrap(),
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(2), 0, ts(101))
+                .await
+                .unwrap(),
             AnswerOutcome::Closed
         ));
         assert_eq!(
-            f.s.get_user(uid(2)).await.unwrap().unwrap().next_quiz_at,
+            fixture
+                .storage
+                .get_user(uid(2))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(100 + PERIOD)
         );
     }
 
     #[tokio::test]
     async fn leaving_keeps_history_and_cancels_open_quiz() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(2), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
-        f.s.answer_quiz(q, uid(2), 0, ts(20)).await.unwrap();
-        f.s.create_quiz(uid(2), f.word, &f.opts, 0, ts(30))
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
             .await
             .unwrap()
             .unwrap();
-        f.s.leave_collection(uid(2), f.collection, ts(40))
+        fixture
+            .storage
+            .answer_quiz(quiz, uid(2), 0, ts(20))
+            .await
+            .unwrap();
+        fixture
+            .storage
+            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(30))
             .await
             .unwrap()
             .unwrap();
-        assert!(f.s.open_quiz(uid(2)).await.unwrap().is_none());
-        assert!(f.s.candidates(uid(2)).await.unwrap().is_empty());
-        f.s.join_collection(uid(2), &f.code, ts(50))
+        fixture
+            .storage
+            .leave_collection(uid(2), fixture.collection, ts(40))
             .await
             .unwrap()
             .unwrap();
-        let c = f.s.candidates(uid(2)).await.unwrap();
+        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
+        assert!(fixture.storage.candidates(uid(2)).await.unwrap().is_empty());
+        fixture
+            .storage
+            .join_collection(uid(2), &fixture.code, ts(50))
+            .await
+            .unwrap()
+            .unwrap();
+        let candidates = fixture.storage.candidates(uid(2)).await.unwrap();
         assert_eq!(
-            c.iter()
-                .find(|c| c.word_id == f.word)
+            candidates
+                .iter()
+                .find(|candidates| candidates.word_id == fixture.word)
                 .unwrap()
                 .answers
                 .len(),
@@ -627,121 +738,171 @@ mod tests {
 
     #[tokio::test]
     async fn startup_cleanup_removes_only_unsent() {
-        let f = fixture().await;
-        let sent =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
-        f.s.set_quiz_message(sent, mid(77)).await.unwrap();
-        f.s.create_quiz(uid(2), f.word, &f.opts, 0, ts(10))
+        let fixture = fixture().await;
+        let sent = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(f.s.delete_unsent_quizzes().await.unwrap(), 1);
-        assert!(f.s.open_quiz(uid(1)).await.unwrap().is_some());
-        assert!(f.s.open_quiz(uid(2)).await.unwrap().is_none());
+        fixture
+            .storage
+            .set_quiz_message(sent, mid(77))
+            .await
+            .unwrap();
+        fixture
+            .storage
+            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fixture.storage.delete_unsent_quizzes().await.unwrap(), 1);
+        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
+        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn open_quiz_round_trips_options_and_message() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(1), f.word, &f.opts, 2, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
-        f.s.set_quiz_message(q, mid(5)).await.unwrap();
-        let open = f.s.open_quiz(uid(1)).await.unwrap().unwrap();
-        assert_eq!(open.id, q);
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 2, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .storage
+            .set_quiz_message(quiz, mid(5))
+            .await
+            .unwrap();
+        let open = fixture.storage.open_quiz(uid(1)).await.unwrap().unwrap();
+        assert_eq!(open.id, quiz);
         assert_eq!(open.term, "run");
-        assert_eq!(open.options, f.opts);
+        assert_eq!(open.options, fixture.options);
         assert_eq!(open.correct_index, 2);
         assert_eq!(open.message_id, Some(mid(5)));
-        f.s.delete_quiz(q).await.unwrap();
-        assert!(f.s.open_quiz(uid(1)).await.unwrap().is_none());
+        fixture.storage.delete_quiz(quiz).await.unwrap();
+        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn malformed_options_are_decode_error() {
-        let f = fixture().await;
+        let fixture = fixture().await;
         sqlx::query(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
              VALUES (1, ?, 'not json', 0, 0)",
         )
-        .bind(f.word)
-        .execute(&f.s.pool)
+        .bind(fixture.word)
+        .execute(&fixture.storage.pool)
         .await
         .unwrap();
         assert!(matches!(
-            f.s.open_quiz(uid(1)).await,
-            Err(sqlx::Error::Decode(_))
+            fixture.storage.open_quiz(uid(1)).await,
+            Err(Error::Decode(_))
         ));
     }
 
     #[tokio::test]
     async fn candidates_include_unanswered_words_with_ordered_translations() {
-        let f = fixture().await;
-        let c = f.s.candidates(uid(1)).await.unwrap();
-        assert_eq!(c.len(), 1);
-        assert_eq!(c[0].collection_id, f.collection);
-        assert_eq!(c[0].term, "run");
-        assert_eq!(c[0].translations, ["бежать", "управлять"]);
-        assert!(c[0].answers.is_empty());
+        let fixture = fixture().await;
+        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].collection_id, fixture.collection);
+        assert_eq!(candidates[0].term, "run");
+        assert_eq!(candidates[0].translations, ["бежать", "управлять"]);
+        assert!(candidates[0].answers.is_empty());
     }
 
     #[tokio::test]
     async fn candidates_hold_only_own_answers() {
-        let f = fixture().await;
-        let q =
-            f.s.create_quiz(uid(2), f.word, &f.opts, 0, ts(10))
-                .await
-                .unwrap()
-                .unwrap();
-        f.s.answer_quiz(q, uid(2), 0, ts(20)).await.unwrap();
-        assert!(f.s.candidates(uid(1)).await.unwrap()[0].answers.is_empty());
-        assert_eq!(f.s.candidates(uid(2)).await.unwrap()[0].answers.len(), 1);
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .storage
+            .answer_quiz(quiz, uid(2), 0, ts(20))
+            .await
+            .unwrap();
+        assert!(
+            fixture.storage.candidates(uid(1)).await.unwrap()[0]
+                .answers
+                .is_empty()
+        );
+        assert_eq!(
+            fixture.storage.candidates(uid(2)).await.unwrap()[0]
+                .answers
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn stats_rank_hardest_by_error_rate() {
-        let f = fixture().await;
-        f.s.import_pairs(
-            f.collection,
-            &[pair("b", "2"), pair("a", "1"), pair("unseen", "3")],
-        )
-        .await
-        .unwrap();
+        let fixture = fixture().await;
+        fixture
+            .storage
+            .import_pairs(
+                fixture.collection,
+                &[pair("b", "2"), pair("a", "1"), pair("unseen", "3")],
+            )
+            .await
+            .unwrap();
         let mut now = ts(1000);
         for (term, choice) in [("run", 1), ("a", 1), ("b", 1)] {
-            let w = f.s.find_word(f.collection, term).await.unwrap().unwrap().id;
-            let q =
-                f.s.create_quiz(uid(1), w, &f.opts, 0, now)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            f.s.answer_quiz(q, uid(1), choice, now).await.unwrap();
-            now = ts(now.as_secs() + 1);
-        }
-        let w =
-            f.s.find_word(f.collection, "unseen")
+            let word = fixture
+                .storage
+                .find_word(fixture.collection, term)
                 .await
                 .unwrap()
                 .unwrap()
                 .id;
-        let q =
-            f.s.create_quiz(uid(1), w, &f.opts, 0, now)
+            let quiz = fixture
+                .storage
+                .create_quiz(uid(1), word, &fixture.options, 0, now)
                 .await
                 .unwrap()
                 .unwrap();
-        f.s.answer_quiz(q, uid(1), 0, now).await.unwrap();
-        let stats =
-            f.s.collection_stats(uid(1), f.collection, now, &cfg())
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), choice, now)
                 .await
                 .unwrap();
+            now = ts(now.as_secs() + 1);
+        }
+        let word = fixture
+            .storage
+            .find_word(fixture.collection, "unseen")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), word, &fixture.options, 0, now)
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .storage
+            .answer_quiz(quiz, uid(1), 0, now)
+            .await
+            .unwrap();
+        let stats = fixture
+            .storage
+            .collection_stats(uid(1), fixture.collection, now, &selection_config())
+            .await
+            .unwrap();
         assert_eq!(stats.word_count, 4);
         assert_eq!((stats.answered, stats.correct), (4, 1));
-        let terms: Vec<_> = stats.hardest.iter().map(|h| h.term.as_str()).collect();
+        let terms: Vec<_> = stats
+            .hardest
+            .iter()
+            .map(|hard| hard.term.as_str())
+            .collect();
         // The one correct answer (`unseen`) gives the lowest error rate.
         assert_eq!(terms.len(), 4);
         assert_eq!(terms.last(), Some(&"unseen"));
@@ -749,33 +910,44 @@ mod tests {
             stats
                 .hardest
                 .windows(2)
-                .all(|p| p[0].error_rate >= p[1].error_rate)
+                .all(|window| window[0].error_rate >= window[1].error_rate)
         );
     }
 
     #[tokio::test]
     async fn stats_cap_hardest_at_ten_and_break_ties_by_term() {
-        let f = fixture().await;
+        let fixture = fixture().await;
         let pairs: Vec<_> = (0..12).map(|i| pair(&format!("w{i:02}"), "x")).collect();
-        f.s.import_pairs(f.collection, &pairs).await.unwrap();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &pairs)
+            .await
+            .unwrap();
         for i in 0..11 {
-            let w =
-                f.s.find_word(f.collection, &format!("w{i:02}"))
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .id;
-            let q =
-                f.s.create_quiz(uid(1), w, &f.opts, 0, ts(5))
-                    .await
-                    .unwrap()
-                    .unwrap();
-            f.s.answer_quiz(q, uid(1), 1, ts(5)).await.unwrap();
-        }
-        let stats =
-            f.s.collection_stats(uid(1), f.collection, ts(5), &cfg())
+            let word = fixture
+                .storage
+                .find_word(fixture.collection, &format!("w{i:02}"))
+                .await
+                .unwrap()
+                .unwrap()
+                .id;
+            let quiz = fixture
+                .storage
+                .create_quiz(uid(1), word, &fixture.options, 0, ts(5))
+                .await
+                .unwrap()
+                .unwrap();
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), 1, ts(5))
                 .await
                 .unwrap();
+        }
+        let stats = fixture
+            .storage
+            .collection_stats(uid(1), fixture.collection, ts(5), &selection_config())
+            .await
+            .unwrap();
         assert_eq!(stats.word_count, 13);
         assert_eq!(stats.hardest.len(), 10);
         // Equal rates, so term order decides and w10 is cut; unanswered w11 is excluded.

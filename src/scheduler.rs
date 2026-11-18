@@ -1,7 +1,7 @@
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tokio::sync::watch;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{self, MissedTickBehavior};
 
 use crate::service::{DispatchOutcome, QuizSender, QuizService};
 use crate::time::Timestamp;
@@ -40,7 +40,7 @@ impl<S: QuizSender> Scheduler<S> {
     /// Ticks until `shutdown` turns true or its sender is dropped.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         let mut rng = StdRng::from_os_rng();
-        let mut interval = tokio::time::interval(self.service.tick_interval());
+        let mut interval = time::interval(self.service.tick_interval());
         // A slow tick should not be followed by a burst of catch-up ticks.
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         // `changed()` only reports later changes, so a shutdown sent before start needs this check.
@@ -75,8 +75,9 @@ mod tests {
     use crate::service::SendError;
     use crate::storage::Storage;
     use std::collections::HashMap;
-    use std::future::Future;
+    use std::future::{self, Future};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const FAKE_MESSAGE_ID: MessageId = MessageId(777);
 
@@ -115,12 +116,12 @@ mod tests {
                     Ok(FAKE_MESSAGE_ID)
                 }
             };
-            std::future::ready(result)
+            future::ready(result)
         }
     }
 
     struct Fixture {
-        s: Storage,
+        storage: Storage,
         sender: FakeSender,
         scheduler: Scheduler<FakeSender>,
         collection: CollectionId,
@@ -141,93 +142,125 @@ mod tests {
         }
 
         async fn add_words(&self, count: usize) {
-            let existing = self.s.count_words(self.collection).await.unwrap() as usize;
+            let existing = self.storage.count_words(self.collection).await.unwrap() as usize;
             let pairs: Vec<ParsedPair> = (existing..existing + count)
                 .map(|i| ParsedPair {
                     term: format!("term{i}"),
                     translation: format!("перевод{i}"),
                 })
                 .collect();
-            self.s.import_pairs(self.collection, &pairs).await.unwrap();
+            self.storage
+                .import_pairs(self.collection, &pairs)
+                .await
+                .unwrap();
         }
     }
 
     /// Users `1..=users` share one collection holding `words` words.
     async fn fixture_with_words(users: i64, words: usize) -> Fixture {
-        let s = Storage::in_memory().await;
+        let storage = Storage::in_memory().await;
         let code: Code = "K7QM-3XPA".parse().unwrap();
-        s.ensure_user(UserId(1), period(), ts(0)).await.unwrap();
-        let collection = s
+        storage
+            .ensure_user(UserId(1), period(), ts(0))
+            .await
+            .unwrap();
+        let collection = storage
             .create_collection(UserId(1), "A", &code, ts(0))
             .await
             .unwrap()
             .unwrap()
             .id;
         for id in 2..=users {
-            s.ensure_user(UserId(id), period(), ts(0)).await.unwrap();
-            s.join_collection(UserId(id), &code, ts(0)).await.unwrap();
+            storage
+                .ensure_user(UserId(id), period(), ts(0))
+                .await
+                .unwrap();
+            storage
+                .join_collection(UserId(id), &code, ts(0))
+                .await
+                .unwrap();
         }
         let sender = FakeSender::default();
-        let service = QuizService::new(s.clone(), sender.clone(), Arc::new(Config::for_tests()));
-        let f = Fixture {
-            s,
+        let service = QuizService::new(
+            storage.clone(),
+            sender.clone(),
+            Arc::new(Config::for_tests()),
+        );
+        let fixture = Fixture {
+            storage,
             sender,
             scheduler: Scheduler::new(service),
             collection,
             running: watch::channel(false).1,
         };
-        f.add_words(words).await;
-        f
+        fixture.add_words(words).await;
+        fixture
     }
 
     #[tokio::test]
     async fn sends_due_quiz_and_stores_message() {
-        let f = fixture_with_words(1, 4).await;
+        let fixture = fixture_with_words(1, 4).await;
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
-            f.s.open_quiz(UserId(1)).await.unwrap().unwrap().message_id,
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .message_id,
             Some(FAKE_MESSAGE_ID)
         );
     }
 
     #[tokio::test]
     async fn waits_for_answer_before_next_quiz() {
-        let f = fixture_with_words(1, 4).await;
-        f.scheduler
-            .tick(ts(100), &mut f.rng(), &f.running)
+        let fixture = fixture_with_words(1, 4).await;
+        fixture
+            .scheduler
+            .tick(ts(100), &mut fixture.rng(), &fixture.running)
             .await
             .unwrap();
         assert_eq!(
-            f.scheduler
-                .tick(ts(100_000), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100_000), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             0
         );
-        assert_eq!(f.sender.sent().len(), 1);
+        assert_eq!(fixture.sender.sent().len(), 1);
     }
 
     #[tokio::test]
     async fn user_without_words_stays_due_and_does_not_block_others() {
-        let f = fixture_with_words(1, 4).await;
+        let fixture = fixture_with_words(1, 4).await;
         for id in 100..400 {
-            f.s.ensure_user(UserId(id), period(), ts(0)).await.unwrap();
+            fixture
+                .storage
+                .ensure_user(UserId(id), period(), ts(0))
+                .await
+                .unwrap();
         }
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
-            f.s.get_user(UserId(100))
+            fixture
+                .storage
+                .get_user(UserId(100))
                 .await
                 .unwrap()
                 .unwrap()
@@ -238,18 +271,20 @@ mod tests {
 
     #[tokio::test]
     async fn quiz_arrives_after_words_appear() {
-        let f = fixture_with_words(1, 1).await;
+        let fixture = fixture_with_words(1, 1).await;
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             0
         );
-        f.add_words(4).await;
+        fixture.add_words(4).await;
         assert_eq!(
-            f.scheduler
-                .tick(ts(130), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(130), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             1
@@ -258,37 +293,58 @@ mod tests {
 
     #[tokio::test]
     async fn transient_failure_leaves_no_open_quiz() {
-        let f = fixture_with_words(1, 4).await;
-        f.sender.fail(1, SendError::Other("timeout".into()));
+        let fixture = fixture_with_words(1, 4).await;
+        fixture.sender.fail(1, SendError::Other("timeout".into()));
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             0
         );
-        assert!(f.s.open_quiz(UserId(1)).await.unwrap().is_none());
-        assert_eq!(f.s.due_users(ts(100)).await.unwrap(), [UserId(1)]);
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fixture.storage.due_users(ts(100)).await.unwrap(),
+            [UserId(1)]
+        );
     }
 
     #[tokio::test]
     async fn blocked_user_is_paused() {
-        let f = fixture_with_words(1, 4).await;
-        f.sender.fail(1, SendError::Blocked);
-        f.scheduler
-            .tick(ts(100), &mut f.rng(), &f.running)
+        let fixture = fixture_with_words(1, 4).await;
+        fixture.sender.fail(1, SendError::Blocked);
+        fixture
+            .scheduler
+            .tick(ts(100), &mut fixture.rng(), &fixture.running)
             .await
             .unwrap();
-        assert!(f.s.get_user(UserId(1)).await.unwrap().unwrap().paused);
+        assert!(
+            fixture
+                .storage
+                .get_user(UserId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .paused
+        );
     }
 
     #[tokio::test]
     async fn one_failure_does_not_stop_others() {
-        let f = fixture_with_words(2, 4).await;
-        f.sender.fail(1, SendError::Other("x".into()));
+        let fixture = fixture_with_words(2, 4).await;
+        fixture.sender.fail(1, SendError::Other("x".into()));
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &f.running)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &fixture.running)
                 .await
                 .unwrap(),
             1
@@ -297,56 +353,67 @@ mod tests {
 
     #[tokio::test]
     async fn tick_stops_walking_users_after_shutdown() {
-        let f = fixture_with_words(2, 4).await;
+        let fixture = fixture_with_words(2, 4).await;
         let (_tx, stopped) = watch::channel(true);
         assert_eq!(
-            f.scheduler
-                .tick(ts(100), &mut f.rng(), &stopped)
+            fixture
+                .scheduler
+                .tick(ts(100), &mut fixture.rng(), &stopped)
                 .await
                 .unwrap(),
             0
         );
-        assert!(f.sender.sent().is_empty());
+        assert!(fixture.sender.sent().is_empty());
     }
 
     #[tokio::test]
     async fn dispatch_due_skips_user_paused_after_listing() {
-        let f = fixture_with_words(1, 4).await;
-        f.s.set_paused(UserId(1), true, ts(50)).await.unwrap();
-        let outcome = f
+        let fixture = fixture_with_words(1, 4).await;
+        fixture
+            .storage
+            .set_paused(UserId(1), true, ts(50))
+            .await
+            .unwrap();
+        let outcome = fixture
             .scheduler
             .service
-            .dispatch_due(UserId(1), ts(100), &mut f.rng())
+            .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
         assert_eq!(outcome, DispatchOutcome::NotDue);
-        assert!(f.sender.sent().is_empty());
+        assert!(fixture.sender.sent().is_empty());
     }
 
     #[tokio::test]
     async fn dispatch_due_skips_user_rescheduled_after_listing() {
-        let f = fixture_with_words(1, 4).await;
-        f.s.set_period(UserId(1), Period::from_secs(600).unwrap(), ts(50))
+        let fixture = fixture_with_words(1, 4).await;
+        fixture
+            .storage
+            .set_period(UserId(1), Period::from_secs(600).unwrap(), ts(50))
             .await
             .unwrap();
-        let outcome = f
+        let outcome = fixture
             .scheduler
             .service
-            .dispatch_due(UserId(1), ts(100), &mut f.rng())
+            .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
         assert_eq!(outcome, DispatchOutcome::NotDue);
-        assert!(f.sender.sent().is_empty());
+        assert!(fixture.sender.sent().is_empty());
     }
 
     #[tokio::test]
     async fn manual_dispatch_ignores_pause() {
-        let f = fixture_with_words(1, 4).await;
-        f.s.set_paused(UserId(1), true, ts(50)).await.unwrap();
-        let outcome = f
+        let fixture = fixture_with_words(1, 4).await;
+        fixture
+            .storage
+            .set_paused(UserId(1), true, ts(50))
+            .await
+            .unwrap();
+        let outcome = fixture
             .scheduler
             .service
-            .dispatch(UserId(1), ts(100), &mut f.rng())
+            .dispatch(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
         assert_eq!(outcome, DispatchOutcome::Sent);
@@ -354,17 +421,19 @@ mod tests {
 
     #[tokio::test]
     async fn eligibility_follows_word_count() {
-        let f = fixture_with_words(1, 2).await;
+        let fixture = fixture_with_words(1, 2).await;
         assert!(
-            !f.scheduler
+            !fixture
+                .scheduler
                 .service
                 .has_eligible_words(UserId(1), ts(100))
                 .await
                 .unwrap()
         );
-        f.add_words(2).await;
+        fixture.add_words(2).await;
         assert!(
-            f.scheduler
+            fixture
+                .scheduler
                 .service
                 .has_eligible_words(UserId(1), ts(100))
                 .await
@@ -374,11 +443,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_stops_on_shutdown_signal() {
-        let f = fixture_with_words(1, 4).await;
-        let (tx, rx) = watch::channel(false);
-        let handle = tokio::spawn(f.scheduler.run(rx));
-        tx.send(true).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        let fixture = fixture_with_words(1, 4).await;
+        let (stop, stopped) = watch::channel(false);
+        let handle = tokio::spawn(fixture.scheduler.run(stopped));
+        stop.send(true).unwrap();
+        time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("run did not stop")
             .unwrap();
@@ -386,11 +455,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_exits_when_already_shut_down() {
-        let f = fixture_with_words(1, 4).await;
-        let (_tx, rx) = watch::channel(true);
-        tokio::time::timeout(std::time::Duration::from_secs(5), f.scheduler.run(rx))
+        let fixture = fixture_with_words(1, 4).await;
+        let (_tx, stopped) = watch::channel(true);
+        time::timeout(Duration::from_secs(5), fixture.scheduler.run(stopped))
             .await
             .expect("run did not exit");
-        assert!(f.sender.sent().is_empty());
+        assert!(fixture.sender.sent().is_empty());
     }
 }

@@ -3,6 +3,7 @@ mod quizzes;
 mod users;
 mod words;
 
+use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
 
@@ -46,10 +47,8 @@ impl Storage {
     /// would otherwise get its own empty database.
     #[cfg(test)]
     pub async fn in_memory() -> Storage {
-        let options = "sqlite::memory:"
-            .parse::<SqliteConnectOptions>()
-            .unwrap()
-            .foreign_keys(true);
+        let options: SqliteConnectOptions = "sqlite::memory:".parse().unwrap();
+        let options = options.foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .idle_timeout(None)
@@ -64,17 +63,17 @@ impl Storage {
 
 /// A stored value that violates a domain invariant, reported as a decode error.
 #[derive(Debug)]
-struct StoredValueError(Box<dyn std::error::Error + Send + Sync>);
+struct StoredValueError(Box<dyn Error + Send + Sync>);
 
 impl StoredValueError {
-    fn new<E: std::error::Error + Send + Sync + 'static>(source: E) -> StoredValueError {
+    fn new<E: Error + Send + Sync + 'static>(source: E) -> StoredValueError {
         StoredValueError(Box::new(source))
     }
 }
 
 impl From<StoredValueError> for sqlx::Error {
     fn from(error: StoredValueError) -> sqlx::Error {
-        sqlx::Error::Decode(error.0)
+        Self::Decode(error.0)
     }
 }
 

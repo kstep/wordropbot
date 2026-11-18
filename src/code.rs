@@ -47,15 +47,15 @@ impl FromStr for Code {
         let chars: Vec<char> = input
             .trim()
             .chars()
-            .filter(|&c| c != '-')
-            .map(|c| c.to_ascii_uppercase())
+            .filter(|&character| character != '-')
+            .map(|character| character.to_ascii_uppercase())
             .collect();
         if chars.len() != 2 * HALF {
             return Err(ParseCodeError::InvalidLength);
         }
         if !chars
             .iter()
-            .all(|&c| c.is_ascii() && ALPHABET.contains(&(c as u8)))
+            .all(|&character| character.is_ascii() && ALPHABET.contains(&(character as u8)))
         {
             return Err(ParseCodeError::InvalidCharacter);
         }
@@ -87,8 +87,8 @@ impl<'r> sqlx::Decode<'r, Sqlite> for Code {
 }
 
 impl fmt::Display for Code {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
@@ -110,7 +110,7 @@ mod tests {
             code.as_str()
                 .replace('-', "")
                 .chars()
-                .all(|c| ALPHABET.contains(c))
+                .all(|character| ALPHABET.contains(character))
         );
     }
 
@@ -122,14 +122,18 @@ mod tests {
 
     #[test]
     fn reports_parse_errors() {
-        for s in ["", "K7QM", "K7QM-3XPAA"] {
-            assert_eq!(s.parse::<Code>(), Err(ParseCodeError::InvalidLength), "{s}");
-        }
-        for s in ["O7QM-3XPA", "K1QM-3XPA", "K7QM-3XP!", "\u{132}7QM-3XPA"] {
+        for text in ["", "K7QM", "K7QM-3XPAA"] {
             assert_eq!(
-                s.parse::<Code>(),
+                text.parse::<Code>(),
+                Err(ParseCodeError::InvalidLength),
+                "{text}"
+            );
+        }
+        for text in ["O7QM-3XPA", "K1QM-3XPA", "K7QM-3XP!", "\u{132}7QM-3XPA"] {
+            assert_eq!(
+                text.parse::<Code>(),
                 Err(ParseCodeError::InvalidCharacter),
-                "{s}"
+                "{text}"
             );
         }
     }

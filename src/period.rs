@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 use sqlx::error::BoxDynError;
 use sqlx::sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef};
@@ -25,7 +26,10 @@ pub enum ParsePeriodError {
 impl Period {
     /// `None` for zero or more than `i64::MAX`.
     pub fn from_secs(secs: u64) -> Option<Period> {
-        i64::try_from(secs).ok().filter(|&s| s > 0).map(Period)
+        i64::try_from(secs)
+            .ok()
+            .filter(|&secs| secs > 0)
+            .map(Period)
     }
 
     pub fn as_secs(self) -> i64 {
@@ -39,8 +43,8 @@ impl TryFrom<i64> for Period {
     fn try_from(secs: i64) -> Result<Period, ParsePeriodError> {
         match secs {
             0 => Err(ParsePeriodError::Zero),
-            s if s < 0 => Err(ParsePeriodError::Invalid(s.to_string())),
-            s => Ok(Period(s)),
+            secs if secs < 0 => Err(ParsePeriodError::Invalid(secs.to_string())),
+            secs => Ok(Period(secs)),
         }
     }
 }
@@ -48,10 +52,10 @@ impl TryFrom<i64> for Period {
 impl FromStr for Period {
     type Err = ParsePeriodError;
 
-    fn from_str(s: &str) -> Result<Period, ParsePeriodError> {
-        let text = s.trim().to_ascii_lowercase();
+    fn from_str(input: &str) -> Result<Period, ParsePeriodError> {
+        let text = input.trim().to_ascii_lowercase();
         let duration = humantime::parse_duration(&text)
-            .map_err(|e| ParsePeriodError::Invalid(e.to_string()))?;
+            .map_err(|error| ParsePeriodError::Invalid(error.to_string()))?;
         if duration.is_zero() {
             return Err(ParsePeriodError::Zero);
         }
@@ -63,9 +67,9 @@ impl FromStr for Period {
 }
 
 impl fmt::Display for Period {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            f,
+            formatter,
             "{}",
             humantime::format_duration(Duration::from_secs(self.0 as u64))
         )
@@ -91,9 +95,9 @@ impl<'r> sqlx::Decode<'r, Sqlite> for Period {
 }
 
 impl<'de> Deserialize<'de> for Period {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Period, D::Error> {
-        let s = String::deserialize(d)?;
-        s.parse().map_err(serde::de::Error::custom)
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Period, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(D::Error::custom)
     }
 }
 
@@ -123,10 +127,10 @@ mod tests {
         assert_eq!("0s".parse::<Period>(), Err(ParsePeriodError::Zero));
         assert_eq!("500ms".parse::<Period>(), Err(ParsePeriodError::SubSecond));
         assert_eq!("1.5s".parse::<Period>(), Err(ParsePeriodError::SubSecond));
-        for s in ["", "h", "-1h", "soon", "99999999999999999999d"] {
+        for text in ["", "h", "-1h", "soon", "99999999999999999999d"] {
             assert!(
-                matches!(s.parse::<Period>(), Err(ParsePeriodError::Invalid(_))),
-                "{s}"
+                matches!(text.parse::<Period>(), Err(ParsePeriodError::Invalid(_))),
+                "{text}"
             );
         }
     }

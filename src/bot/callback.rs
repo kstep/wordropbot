@@ -21,15 +21,15 @@ pub enum CallbackAction {
 pub struct ParseCallbackError;
 
 impl fmt::Display for CallbackAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CallbackAction::Answer { quiz, index } => write!(f, "a:{quiz}:{index}"),
-            CallbackAction::Activate(id) => write!(f, "c:{id}"),
-            CallbackAction::LeaveAsk(id) => write!(f, "l:{id}"),
-            CallbackAction::LeaveConfirm(id) => write!(f, "y:{id}"),
-            CallbackAction::RemoveConfirm(id) => write!(f, "r:{id}"),
-            CallbackAction::WordsPage(page) => write!(f, "w:{page}"),
-            CallbackAction::Dismiss => f.write_str("d"),
+            CallbackAction::Answer { quiz, index } => write!(formatter, "a:{quiz}:{index}"),
+            CallbackAction::Activate(id) => write!(formatter, "c:{id}"),
+            CallbackAction::LeaveAsk(id) => write!(formatter, "l:{id}"),
+            CallbackAction::LeaveConfirm(id) => write!(formatter, "y:{id}"),
+            CallbackAction::RemoveConfirm(id) => write!(formatter, "r:{id}"),
+            CallbackAction::WordsPage(page) => write!(formatter, "w:{page}"),
+            CallbackAction::Dismiss => formatter.write_str("d"),
         }
     }
 }
@@ -38,8 +38,8 @@ impl FromStr for CallbackAction {
     type Err = ParseCallbackError;
 
     fn from_str(data: &str) -> Result<CallbackAction, ParseCallbackError> {
-        fn num<T: FromStr>(s: &str) -> Result<T, ParseCallbackError> {
-            s.parse().map_err(|_| ParseCallbackError)
+        fn num<T: FromStr>(text: &str) -> Result<T, ParseCallbackError> {
+            text.parse().map_err(|_| ParseCallbackError)
         }
         let mut parts = data.split(':');
         let action = match (parts.next(), parts.next(), parts.next()) {
@@ -88,10 +88,14 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        for s in [
+        for data in [
             "", "x", "a:1", "a:x:1", "r:", "zz:1", "a:1:2:3", "c:1:2", "d:1",
         ] {
-            assert_eq!(s.parse::<CallbackAction>(), Err(ParseCallbackError), "{s}");
+            assert_eq!(
+                data.parse::<CallbackAction>(),
+                Err(ParseCallbackError),
+                "{data}"
+            );
         }
     }
 }

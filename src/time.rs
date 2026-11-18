@@ -20,7 +20,9 @@ impl Timestamp {
     pub fn now() -> Timestamp {
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            .map_or(0, |since_epoch| {
+                i64::try_from(since_epoch.as_secs()).unwrap_or(i64::MAX)
+            });
         Timestamp(secs)
     }
 

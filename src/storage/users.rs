@@ -64,8 +64,8 @@ impl Storage {
         period: Period,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
-        let mut tx = self.begin_write().await?;
-        let open = Self::has_open_quiz(&mut tx, id).await?;
+        let mut transaction = self.begin_write().await?;
+        let open = Self::has_open_quiz(&mut transaction, id).await?;
         sqlx::query(
             "UPDATE users SET period_secs = ?1, \
              next_quiz_at = CASE WHEN ?2 THEN next_quiz_at ELSE ?3 END WHERE id = ?4",
@@ -74,9 +74,9 @@ impl Storage {
         .bind(open)
         .bind(now + period)
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut *transaction)
         .await?;
-        tx.commit().await?;
+        transaction.commit().await?;
         Ok(open)
     }
 
@@ -87,38 +87,38 @@ impl Storage {
         paused: bool,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
-        let mut tx = self.begin_write().await?;
-        let open = Self::has_open_quiz(&mut tx, id).await?;
+        let mut transaction = self.begin_write().await?;
+        let open = Self::has_open_quiz(&mut transaction, id).await?;
         let updated = sqlx::query("UPDATE users SET paused = ? WHERE id = ?")
             .bind(paused)
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&mut *transaction)
             .await?;
         if updated.rows_affected() == 0 {
             return Ok(false);
         }
         if !paused && !open {
-            Self::reschedule(&mut tx, id, now).await?;
+            Self::reschedule(&mut transaction, id, now).await?;
         }
-        tx.commit().await?;
+        transaction.commit().await?;
         Ok(open)
     }
 
     /// Schedules the user's next quiz one period after `now`. Takes a transaction
     /// so the period read and the update cannot interleave with another writer.
     pub(super) async fn reschedule(
-        tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        transaction: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
         user_id: UserId,
         now: Timestamp,
     ) -> Result<(), sqlx::Error> {
         let period: Period = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
             .bind(user_id)
-            .fetch_one(&mut **tx)
+            .fetch_one(&mut **transaction)
             .await?;
         sqlx::query("UPDATE users SET next_quiz_at = ? WHERE id = ?")
             .bind(now + period)
             .bind(user_id)
-            .execute(&mut **tx)
+            .execute(&mut **transaction)
             .await?;
         Ok(())
     }
@@ -135,14 +135,14 @@ impl Storage {
     }
 
     async fn has_open_quiz(
-        tx: &mut sqlx::SqliteConnection,
+        transaction: &mut sqlx::SqliteConnection,
         user_id: UserId,
     ) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM quizzes WHERE user_id = ? AND answered_at IS NULL)",
         )
         .bind(user_id)
-        .fetch_one(tx)
+        .fetch_one(transaction)
         .await
     }
 }
@@ -161,20 +161,30 @@ mod tests {
 
     #[tokio::test]
     async fn new_user_is_due_immediately() {
-        let s = Storage::in_memory().await;
-        let u = s.ensure_user(uid(1), period(86400), ts(100)).await.unwrap();
-        assert_eq!(u.next_quiz_at, ts(100));
-        assert_eq!(s.due_users(ts(100)).await.unwrap(), [uid(1)]);
-        assert!(s.due_users(ts(99)).await.unwrap().is_empty());
+        let storage = Storage::in_memory().await;
+        let user = storage
+            .ensure_user(uid(1), period(86400), ts(100))
+            .await
+            .unwrap();
+        assert_eq!(user.next_quiz_at, ts(100));
+        assert_eq!(storage.due_users(ts(100)).await.unwrap(), [uid(1)]);
+        assert!(storage.due_users(ts(99)).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn ensure_user_keeps_existing_settings() {
-        let s = Storage::in_memory().await;
-        s.ensure_user(uid(1), period(86400), ts(100)).await.unwrap();
-        s.set_period(uid(1), period(60), ts(200)).await.unwrap();
+        let storage = Storage::in_memory().await;
+        storage
+            .ensure_user(uid(1), period(86400), ts(100))
+            .await
+            .unwrap();
+        storage
+            .set_period(uid(1), period(60), ts(200))
+            .await
+            .unwrap();
         assert_eq!(
-            s.ensure_user(uid(1), period(86400), ts(300))
+            storage
+                .ensure_user(uid(1), period(86400), ts(300))
                 .await
                 .unwrap()
                 .period,
@@ -184,54 +194,85 @@ mod tests {
 
     #[tokio::test]
     async fn period_and_resume_reschedule() {
-        let s = Storage::in_memory().await;
-        s.ensure_user(uid(1), period(86400), ts(0)).await.unwrap();
-        assert!(!s.set_period(uid(1), period(60), ts(100)).await.unwrap());
+        let storage = Storage::in_memory().await;
+        storage
+            .ensure_user(uid(1), period(86400), ts(0))
+            .await
+            .unwrap();
+        assert!(
+            !storage
+                .set_period(uid(1), period(60), ts(100))
+                .await
+                .unwrap()
+        );
         assert_eq!(
-            s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(160)
         );
-        s.set_paused(uid(1), true, ts(110)).await.unwrap();
-        assert!(s.due_users(ts(1000)).await.unwrap().is_empty());
-        s.set_paused(uid(1), false, ts(200)).await.unwrap();
+        storage.set_paused(uid(1), true, ts(110)).await.unwrap();
+        assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
+        storage.set_paused(uid(1), false, ts(200)).await.unwrap();
         assert_eq!(
-            s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(260)
         );
     }
 
     #[tokio::test]
     async fn resuming_unknown_user_is_noop() {
-        let s = Storage::in_memory().await;
-        assert!(!s.set_paused(uid(9), false, ts(0)).await.unwrap());
-        assert!(s.get_user(uid(9)).await.unwrap().is_none());
+        let storage = Storage::in_memory().await;
+        assert!(!storage.set_paused(uid(9), false, ts(0)).await.unwrap());
+        assert!(storage.get_user(uid(9)).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn open_quiz_blocks_reschedule_and_due() {
-        let s = Storage::in_memory().await;
-        s.ensure_user(uid(1), period(60), ts(0)).await.unwrap();
+        let storage = Storage::in_memory().await;
+        storage
+            .ensure_user(uid(1), period(60), ts(0))
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO collections (id, code, name, created_at) VALUES (1, 'C', 'C', 0)")
-            .execute(&s.pool)
+            .execute(&storage.pool)
             .await
             .unwrap();
         sqlx::query(
             "INSERT INTO words (id, collection_id, term, term_norm) VALUES (1, 1, 'a', 'a')",
         )
-        .execute(&s.pool)
+        .execute(&storage.pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
              VALUES (1, 1, '[]', 0, 0)",
         )
-        .execute(&s.pool)
+        .execute(&storage.pool)
         .await
         .unwrap();
-        assert!(s.due_users(ts(1000)).await.unwrap().is_empty());
-        assert!(s.set_period(uid(1), period(30), ts(500)).await.unwrap());
+        assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
+        assert!(
+            storage
+                .set_period(uid(1), period(30), ts(500))
+                .await
+                .unwrap()
+        );
         assert_eq!(
-            s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
+            storage
+                .get_user(uid(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .next_quiz_at,
             ts(0)
         );
     }

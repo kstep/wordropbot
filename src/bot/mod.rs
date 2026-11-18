@@ -9,6 +9,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use teloxide::RequestError;
+use teloxide::adaptors::Throttle;
 use teloxide::adaptors::throttle::Limits;
 use teloxide::dispatching::{DefaultKey, ShutdownToken};
 use teloxide::errors::ApiError;
@@ -25,7 +26,7 @@ use crate::service::{QuizSender, QuizService, SendError};
 use crate::storage::Storage;
 
 /// The bot behind Telegram's rate limits.
-pub type TelegramBot = teloxide::adaptors::Throttle<Bot>;
+pub type TelegramBot = Throttle<Bot>;
 
 impl From<RequestError> for SendError {
     fn from(error: RequestError) -> SendError {
@@ -115,9 +116,9 @@ impl BotApp {
         let schema = dptree::entry()
             .branch(
                 Update::filter_message()
-                    .filter(|msg: Message| msg.chat.is_private())
-                    .endpoint(|msg: Message, handlers: Arc<Handlers>| async move {
-                        handlers.on_message(msg).await;
+                    .filter(|message: Message| message.chat.is_private())
+                    .endpoint(|message: Message, handlers: Arc<Handlers>| async move {
+                        handlers.on_message(message).await;
                         Ok::<(), Infallible>(())
                     }),
             )

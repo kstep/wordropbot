@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Display};
 
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident($inner:ty)) => {
@@ -8,8 +8,8 @@ macro_rules! id_type {
         pub struct $name(pub $inner);
 
         impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fmt::Display::fmt(&self.0, f)
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                Display::fmt(&self.0, formatter)
             }
         }
     };

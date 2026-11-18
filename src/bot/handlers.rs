@@ -69,20 +69,23 @@ impl View {
     fn collections(collections: &[CollectionSummary]) -> View {
         let mut text = String::from("Твои коллекции:");
         let mut rows = Vec::new();
-        for c in collections {
-            let mark = if c.is_active {
+        for collection in collections {
+            let mark = if collection.is_active {
                 " (активная)"
             } else {
                 ""
             };
             text.push_str(&format!(
                 "\n{} — {}, слов: {}{mark}",
-                c.name, c.code, c.word_count
+                collection.name, collection.code, collection.word_count
             ));
-            let name: String = c.name.chars().take(BUTTON_NAME_CHARS).collect();
+            let name: String = collection.name.chars().take(BUTTON_NAME_CHARS).collect();
             rows.push(vec![
-                Handlers::button(format!("Выбрать «{name}»"), CallbackAction::Activate(c.id)),
-                Handlers::button("Выйти", CallbackAction::LeaveAsk(c.id)),
+                Handlers::button(
+                    format!("Выбрать «{name}»"),
+                    CallbackAction::Activate(collection.id),
+                ),
+                Handlers::button("Выйти", CallbackAction::LeaveAsk(collection.id)),
             ]);
         }
         View {
@@ -119,9 +122,9 @@ impl Handlers {
 
     // Entry points: failures are logged and never reach the dispatcher.
 
-    pub async fn on_message(&self, msg: Message) {
-        let user = UserId(msg.chat.id.0);
-        if let Err(error) = self.handle_message(user, msg.text()).await {
+    pub async fn on_message(&self, message: Message) {
+        let user = UserId(message.chat.id.0);
+        if let Err(error) = self.handle_message(user, message.text()).await {
             tracing::error!(%user, %error, "message handler failed");
             // The apology is best effort: the failure may be Telegram itself.
             let _ = self.say(user, APOLOGY).await;
@@ -163,7 +166,8 @@ impl Handlers {
             .ensure_user(user, self.config.schedule.default_period, Timestamp::now())
             .await?;
         let Some(text) = text else { return Ok(()) };
-        match text.parse::<Command>() {
+        let command: Result<Command, _> = text.parse();
+        match command {
             Ok(Command::Start) => self.help(user, row.paused).await,
             Ok(Command::Help | Command::Unknown) => self.help(user, false).await,
             Ok(Command::CollectionList) => self.collection_list(user).await,
@@ -189,7 +193,8 @@ impl Handlers {
                 Timestamp::now(),
             )
             .await?;
-        let Some(Ok(action)) = data.map(str::parse::<CallbackAction>) else {
+        let action: Option<CallbackAction> = data.and_then(|data| data.parse().ok());
+        let Some(action) = action else {
             return Ok(Some("Эта кнопка больше не работает."));
         };
         match action {
@@ -250,7 +255,7 @@ impl Handlers {
                 )
                 .await;
         }
-        let Ok(code) = raw.parse::<Code>() else {
+        let Ok(code): Result<Code, _> = raw.parse() else {
             self.limiter().record_failure(user, Timestamp::now());
             return self
                 .say(
@@ -358,7 +363,7 @@ impl Handlers {
     }
 
     async fn period(&self, user: UserId, raw: &str) -> Reply {
-        let Ok(period) = raw.parse::<Period>() else {
+        let Ok(period): Result<Period, _> = raw.parse() else {
             return self
                 .say(user, "Не понял период. Примеры: 30m, 2h, 1d.")
                 .await;
@@ -471,7 +476,7 @@ impl Handlers {
 
     async fn leave_ask(&self, press: Press, id: CollectionId) -> Reply<Notice> {
         let collections = self.storage.list_collections(press.user).await?;
-        let Some(collection) = collections.iter().find(|c| c.id == id) else {
+        let Some(collection) = collections.iter().find(|listed| listed.id == id) else {
             return Ok(Some("Ты не участник этой коллекции."));
         };
         let text = format!(
@@ -591,7 +596,7 @@ impl Handlers {
 
     async fn active_collection(&self, user: UserId) -> Reply<Option<CollectionId>> {
         let user = self.storage.get_user(user).await?;
-        Ok(user.and_then(|u| u.active_collection_id))
+        Ok(user.and_then(|row| row.active_collection_id))
     }
 
     fn limiter(&self) -> MutexGuard<'_, JoinLimiter> {

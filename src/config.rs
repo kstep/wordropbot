@@ -1,4 +1,6 @@
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -9,13 +11,10 @@ use crate::period::Period;
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("cannot read config {path}: {source}")]
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    Read { path: PathBuf, source: io::Error },
     /// Only the message and line are kept: `toml::de::Error`'s `Display` quotes the
     /// offending source line, which could leak a malformed token into logs.
-    #[error("invalid config{}: {message}", line.map_or(String::new(), |l| format!(" (line {l})")))]
+    #[error("invalid config{}: {message}", line.map_or(String::new(), |number| format!(" (line {number})")))]
     Parse {
         message: String,
         line: Option<usize>,
@@ -31,8 +30,9 @@ pub struct TelegramConfig {
 
 // Manual Debug so the token never reaches logs.
 impl fmt::Debug for TelegramConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TelegramConfig")
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TelegramConfig")
             .field("token", &"<redacted>")
             .finish()
     }
@@ -139,20 +139,20 @@ impl FromStr for Config {
     type Err = ConfigError;
 
     fn from_str(text: &str) -> Result<Config, ConfigError> {
-        let c: Config = toml::from_str(text).map_err(|e| ConfigError::Parse {
-            message: e.message().to_owned(),
-            line: e
+        let config: Config = toml::from_str(text).map_err(|error| ConfigError::Parse {
+            message: error.message().to_owned(),
+            line: error
                 .span()
                 .map(|span| text[..span.start].matches('\n').count() + 1),
         })?;
-        c.validate()?;
-        Ok(c)
+        config.validate()?;
+        Ok(config)
     }
 }
 
 impl Config {
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_owned(),
             source,
         })?;
@@ -160,26 +160,28 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        let s = &self.selection;
+        let selection = &self.selection;
         let checks = [
             (
                 !self.telegram.token.trim().is_empty(),
                 "telegram.token must not be empty",
             ),
             (
-                s.half_life_days.is_finite() && s.half_life_days > 0.0,
+                selection.half_life_days.is_finite() && selection.half_life_days > 0.0,
                 "selection.half_life_days must be > 0",
             ),
             (
-                s.prior_error.is_finite() && (0.0..=1.0).contains(&s.prior_error),
+                selection.prior_error.is_finite() && (0.0..=1.0).contains(&selection.prior_error),
                 "selection.prior_error must be in 0..=1",
             ),
             (
-                s.prior_strength.is_finite() && s.prior_strength > 0.0,
+                selection.prior_strength.is_finite() && selection.prior_strength > 0.0,
                 "selection.prior_strength must be > 0",
             ),
             (
-                s.min_weight.is_finite() && s.min_weight > 0.0 && s.min_weight <= 1.0,
+                selection.min_weight.is_finite()
+                    && selection.min_weight > 0.0
+                    && selection.min_weight <= 1.0,
                 "selection.min_weight must be in (0, 1]",
             ),
             (
@@ -196,7 +198,7 @@ impl Config {
             ),
         ];
         match checks.iter().find(|(ok, _)| !ok) {
-            Some((_, msg)) => Err(ConfigError::Invalid((*msg).to_owned())),
+            Some((_, message)) => Err(ConfigError::Invalid((*message).to_owned())),
             None => Ok(()),
         }
     }
@@ -241,21 +243,21 @@ join_attempts_per_minute = 5
 
     #[test]
     fn example_config_is_valid() {
-        let c: Config = include_str!("../deploy/config.example.toml")
+        let config: Config = include_str!("../deploy/config.example.toml")
             .parse()
             .unwrap();
         assert_eq!(
-            c.database.path,
+            config.database.path,
             Path::new("/var/lib/wordropbot/wordropbot.db")
         );
     }
 
     #[test]
     fn parses_valid() {
-        let c: Config = VALID.parse().unwrap();
-        assert_eq!(c.quiz.options, 3);
-        assert_eq!(c.schedule.default_period.as_secs(), 86400);
-        assert_eq!(c.schedule.min_period.as_secs(), 60);
+        let config: Config = VALID.parse().unwrap();
+        assert_eq!(config.quiz.options, 3);
+        assert_eq!(config.schedule.default_period.as_secs(), 86400);
+        assert_eq!(config.schedule.min_period.as_secs(), 60);
     }
 
     #[test]
@@ -295,28 +297,28 @@ join_attempts_per_minute = 5
 
     #[test]
     fn token_only_config_uses_defaults() {
-        let c: Config = TOKEN_ONLY.parse().unwrap();
-        assert_eq!(c.database.path, Path::new("wordropbot.db"));
-        assert_eq!(c.selection.half_life_days, 14.0);
-        assert_eq!(c.selection.prior_error, 0.5);
-        assert_eq!(c.selection.prior_strength, 1.0);
-        assert_eq!(c.selection.min_weight, 0.05);
-        assert_eq!(c.quiz.options, 3);
-        assert_eq!(c.schedule.default_period.as_secs(), 86_400);
-        assert_eq!(c.schedule.min_period.as_secs(), 60);
-        assert_eq!(c.schedule.tick_seconds, 30);
-        assert_eq!(c.limits.max_term_chars, 200);
-        assert_eq!(c.limits.max_translation_chars, 200);
-        assert_eq!(c.limits.join_attempts_per_minute, 5);
+        let config: Config = TOKEN_ONLY.parse().unwrap();
+        assert_eq!(config.database.path, Path::new("wordropbot.db"));
+        assert_eq!(config.selection.half_life_days, 14.0);
+        assert_eq!(config.selection.prior_error, 0.5);
+        assert_eq!(config.selection.prior_strength, 1.0);
+        assert_eq!(config.selection.min_weight, 0.05);
+        assert_eq!(config.quiz.options, 3);
+        assert_eq!(config.schedule.default_period.as_secs(), 86_400);
+        assert_eq!(config.schedule.min_period.as_secs(), 60);
+        assert_eq!(config.schedule.tick_seconds, 30);
+        assert_eq!(config.limits.max_term_chars, 200);
+        assert_eq!(config.limits.max_translation_chars, 200);
+        assert_eq!(config.limits.join_attempts_per_minute, 5);
     }
 
     #[test]
     fn partial_section_keeps_other_defaults() {
-        let c: Config = format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")
+        let config: Config = format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")
             .parse()
             .unwrap();
-        assert_eq!(c.selection.min_weight, 0.1);
-        assert_eq!(c.selection.half_life_days, 14.0);
+        assert_eq!(config.selection.min_weight, 0.1);
+        assert_eq!(config.selection.half_life_days, 14.0);
     }
 
     #[test]
@@ -333,9 +335,8 @@ join_attempts_per_minute = 5
 
     #[test]
     fn parse_error_does_not_quote_source() {
-        let error = "[telegram]\ntoken = sEcReT\n"
-            .parse::<Config>()
-            .unwrap_err();
+        let result: Result<Config, _> = "[telegram]\ntoken = sEcReT\n".parse();
+        let error = result.unwrap_err();
         assert!(!error.to_string().contains("sEcReT"), "{error}");
         assert!(
             matches!(error, ConfigError::Parse { line: Some(2), .. }),
@@ -345,7 +346,7 @@ join_attempts_per_minute = 5
 
     #[test]
     fn debug_output_hides_token() {
-        let c: Config = VALID.parse().unwrap();
-        assert!(!format!("{c:?}").contains("PUT_BOT_TOKEN_HERE"));
+        let config: Config = VALID.parse().unwrap();
+        assert!(!format!("{config:?}").contains("PUT_BOT_TOKEN_HERE"));
     }
 }

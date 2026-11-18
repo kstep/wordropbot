@@ -21,10 +21,10 @@ impl SelectionConfig {
         for answer in answers {
             // `secs_since` clamps clock skew and future timestamps, so the weight never exceeds 1.
             let age_days = now.secs_since(answer.answered_at) as f64 / SECS_PER_DAY;
-            let w = 0.5_f64.powf(age_days / self.half_life_days);
-            total += w;
+            let weight = 0.5_f64.powf(age_days / self.half_life_days);
+            total += weight;
             if !answer.is_correct {
-                errors += w;
+                errors += weight;
             }
         }
         (errors + self.prior_error * self.prior_strength) / (total + self.prior_strength)
@@ -49,7 +49,9 @@ impl FromIterator<f64> for Weights {
 impl Weights {
     /// Picks an index proportionally to the weights; `None` if empty or all zero/invalid.
     pub fn pick<R: Rng + ?Sized>(&self, rng: &mut R) -> Option<usize> {
-        WeightedIndex::new(&self.0).ok().map(|d| d.sample(rng))
+        WeightedIndex::new(&self.0)
+            .ok()
+            .map(|distribution| distribution.sample(rng))
     }
 }
 
@@ -60,7 +62,7 @@ mod tests {
     use rand::rngs::StdRng;
 
     const DAY: i64 = 86_400;
-    fn cfg() -> SelectionConfig {
+    fn config() -> SelectionConfig {
         SelectionConfig {
             half_life_days: 14.0,
             prior_error: 0.5,
@@ -71,57 +73,57 @@ mod tests {
     fn ts(secs: i64) -> Timestamp {
         Timestamp::from_secs(secs)
     }
-    fn correct(at: i64, n: usize) -> Vec<AnswerRecord> {
+    fn correct(at: i64, count: usize) -> Vec<AnswerRecord> {
         vec![
             AnswerRecord {
                 answered_at: ts(at),
                 is_correct: true
             };
-            n
+            count
         ]
     }
-    fn weights(w: &[f64]) -> Weights {
-        w.iter().copied().collect()
+    fn weights(values: &[f64]) -> Weights {
+        values.iter().copied().collect()
     }
     #[test]
     fn new_word() {
-        assert!((cfg().word_weight(&[], ts(0)) - 0.525).abs() < 1e-9);
+        assert!((config().word_weight(&[], ts(0)) - 0.525).abs() < 1e-9);
     }
     #[test]
     fn ten_fresh_correct() {
-        assert!((cfg().word_weight(&correct(1000, 10), ts(1000)) - 0.0932).abs() < 1e-3);
+        assert!((config().word_weight(&correct(1000, 10), ts(1000)) - 0.0932).abs() < 1e-3);
     }
     #[test]
     fn ten_correct_60_days_ago() {
-        assert!((cfg().word_weight(&correct(0, 10), ts(60 * DAY)) - 0.364).abs() < 1e-3);
+        assert!((config().word_weight(&correct(0, 10), ts(60 * DAY)) - 0.364).abs() < 1e-3);
     }
     #[test]
     fn half_life_halves_answer_weight() {
-        let cfg = SelectionConfig {
+        let config = SelectionConfig {
             prior_error: 0.0,
-            ..cfg()
+            ..config()
         };
         let wrong = [AnswerRecord {
             answered_at: ts(0),
             is_correct: false,
         }];
         // w = 0.5, p = 0.5 / (0.5 + 1)
-        assert!((cfg.error_rate(&wrong, ts(14 * DAY)) - 1.0 / 3.0).abs() < 1e-9);
+        assert!((config.error_rate(&wrong, ts(14 * DAY)) - 1.0 / 3.0).abs() < 1e-9);
     }
     #[test]
     fn future_answer_has_zero_age() {
         assert_eq!(
-            cfg().word_weight(&correct(500, 1), ts(100)),
-            cfg().word_weight(&correct(100, 1), ts(100))
+            config().word_weight(&correct(500, 1), ts(100)),
+            config().word_weight(&correct(100, 1), ts(100))
         );
     }
     #[test]
     fn weight_never_below_minimum() {
-        let cfg = SelectionConfig {
+        let config = SelectionConfig {
             prior_error: 0.0,
-            ..cfg()
+            ..config()
         };
-        assert!((cfg.word_weight(&correct(0, 1000), ts(0)) - 0.05).abs() < 1e-9);
+        assert!((config.word_weight(&correct(0, 1000), ts(0)) - 0.05).abs() < 1e-9);
     }
     #[test]
     fn pick_handles_edges() {

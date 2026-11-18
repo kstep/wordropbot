@@ -55,7 +55,7 @@ impl FromStr for ParsedPair {
         // Dashes are searched in the raw line so that `слово - ` is a bad line, not a spaced pair.
         let dash = DASH_SEPARATORS
             .iter()
-            .filter_map(|sep| line.find(sep).map(|pos| (pos, sep.len())))
+            .filter_map(|separator| line.find(separator).map(|pos| (pos, separator.len())))
             .min_by_key(|&(pos, _)| pos);
         let (term, translation) = match dash {
             Some((pos, len)) => (&line[..pos], &line[pos + len..]),
@@ -78,18 +78,19 @@ impl FromStr for ParsedPair {
 impl ParseReport {
     pub fn parse(text: &str, limits: &LimitsConfig) -> ParseReport {
         let mut report = ParseReport::default();
-        for (idx, line) in text.lines().enumerate() {
+        for (index, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            match line.parse::<ParsedPair>() {
+            let parsed: Result<ParsedPair, _> = line.parse();
+            match parsed {
                 Ok(pair)
                     if pair.term.chars().count() <= limits.max_term_chars
                         && pair.translation.chars().count() <= limits.max_translation_chars =>
                 {
                     report.pairs.push(pair);
                 }
-                _ => report.bad_lines.push(idx + 1),
+                _ => report.bad_lines.push(index + 1),
             }
         }
         report
@@ -101,10 +102,10 @@ mod tests {
     use super::*;
     use crate::config::LimitsConfig;
 
-    fn pair(t: &str, r: &str) -> ParsedPair {
+    fn pair(term: &str, translation: &str) -> ParsedPair {
         ParsedPair {
-            term: t.into(),
-            translation: r.into(),
+            term: term.into(),
+            translation: translation.into(),
         }
     }
     fn limits() -> LimitsConfig {
@@ -146,9 +147,9 @@ mod tests {
     }
     #[test]
     fn reports_bad_lines_and_skips_blank() {
-        let r = ParseReport::parse("a б\n\nодно\n  \nв г", &limits());
-        assert_eq!(r.pairs, [pair("a", "б"), pair("в", "г")]);
-        assert_eq!(r.bad_lines, [3]);
+        let report = ParseReport::parse("a б\n\nодно\n  \nв г", &limits());
+        assert_eq!(report.pairs, [pair("a", "б"), pair("в", "г")]);
+        assert_eq!(report.bad_lines, [3]);
     }
     #[test]
     fn empty_side_of_dash_is_bad() {

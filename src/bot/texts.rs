@@ -39,12 +39,12 @@ pub struct Help {
 }
 
 impl fmt::Display for Help {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.paused {
-            writeln!(f, "{PAUSED_NOTE}\n")?;
+            writeln!(formatter, "{PAUSED_NOTE}\n")?;
         }
         write!(
-            f,
+            formatter,
             "{HELP}\n\nКвизы начнутся, когда в коллекции будет минимум {} слов с разными переводами.",
             self.quiz_options
         )
@@ -57,9 +57,9 @@ pub struct NotEnoughWords {
 }
 
 impl fmt::Display for NotEnoughWords {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            f,
+            formatter,
             "Квизы пока не начнутся: добавь слов, чтобы в коллекции было минимум {} слов с разными переводами.",
             self.quiz_options
         )
@@ -72,11 +72,11 @@ pub struct NoActiveCollection {
 }
 
 impl fmt::Display for NoActiveCollection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.has_collections {
-            f.write_str("Активная коллекция не выбрана. Выбери её через /collection.")
+            formatter.write_str("Активная коллекция не выбрана. Выбери её через /collection.")
         } else {
-            f.write_str(
+            formatter.write_str(
                 "Активной коллекции нет. Создай её командой /collection new <название> \
                  или подключись по коду: /collection <КОД>.",
             )
@@ -88,7 +88,7 @@ impl fmt::Display for NoActiveCollection {
 struct Truncated<'a>(&'a str);
 
 impl fmt::Display for Truncated<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = self.0;
         match text.char_indices().nth(MAX_MESSAGE_CHARS) {
             Some(_) => {
@@ -97,10 +97,10 @@ impl fmt::Display for Truncated<'_> {
                     .char_indices()
                     .nth(MAX_MESSAGE_CHARS - 1)
                     .map_or(text.len(), |(i, _)| i);
-                f.write_str(&text[..keep])?;
-                f.write_str("…")
+                formatter.write_str(&text[..keep])?;
+                formatter.write_str("…")
             }
-            None => f.write_str(text),
+            None => formatter.write_str(text),
         }
     }
 }
@@ -113,13 +113,13 @@ pub struct WordsPage<'a> {
 }
 
 impl fmt::Display for WordsPage<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut text = format!("Слова, страница {} из {}:", self.page, self.total_pages);
         for word in self.words {
             // Writing to a String cannot fail.
             let _ = write!(text, "\n{} — {}", word.term, word.translations.join(", "));
         }
-        Truncated(&text).fmt(f)
+        Truncated(&text).fmt(formatter)
     }
 }
 
@@ -130,9 +130,9 @@ pub struct ImportReport<'a> {
 }
 
 impl fmt::Display for ImportReport<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            f,
+            formatter,
             "Добавлено слов: {}, обновлено: {}.",
             self.summary.added, self.summary.updated
         )?;
@@ -143,11 +143,15 @@ impl fmt::Display for ImportReport<'_> {
                 .take(MAX_BAD_LINES)
                 .map(ToString::to_string)
                 .collect();
-            write!(f, "\nНе удалось разобрать строки: {}", shown.join(", "))?;
+            write!(
+                formatter,
+                "\nНе удалось разобрать строки: {}",
+                shown.join(", ")
+            )?;
             if self.bad_lines.len() > MAX_BAD_LINES {
-                f.write_str(" и другие")?;
+                formatter.write_str(" и другие")?;
             }
-            f.write_str(".")?;
+            formatter.write_str(".")?;
         }
         Ok(())
     }
@@ -182,37 +186,37 @@ impl<'a> AnswerResult<'a> {
 }
 
 impl fmt::Display for AnswerResult<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mark = if self.is_correct { "✅" } else { "❌" };
         let mut text = format!("{mark} {} — {}", self.term, self.translations.join(", "));
         if !self.is_correct {
             // Writing to a String cannot fail.
             let _ = write!(text, " (ты выбрал: {})", self.chosen);
         }
-        Truncated(&text).fmt(f)
+        Truncated(&text).fmt(formatter)
     }
 }
 
 pub struct StatsReport<'a>(pub &'a CollectionStats);
 
 impl fmt::Display for StatsReport<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let stats = self.0;
-        writeln!(f, "Слов в коллекции: {}", stats.word_count)?;
+        writeln!(formatter, "Слов в коллекции: {}", stats.word_count)?;
         if stats.answered == 0 {
-            return f.write_str("Ответов пока нет.");
+            return formatter.write_str("Ответов пока нет.");
         }
         let percent = stats.correct * 100 / stats.answered;
         write!(
-            f,
+            formatter,
             "Верных ответов: {percent}% ({} из {})",
             stats.correct, stats.answered
         )?;
         if !stats.hardest.is_empty() {
-            f.write_str("\n\nСамые трудные слова:")?;
+            formatter.write_str("\n\nСамые трудные слова:")?;
             for word in &stats.hardest {
                 write!(
-                    f,
+                    formatter,
                     "\n{} — ошибок {:.0}%",
                     word.term,
                     word.error_rate * 100.0
@@ -359,7 +363,7 @@ mod tests {
             paused: false,
         }
         .to_string();
-        for cmd in [
+        for command in [
             "/collection",
             "/words",
             "/remove",
@@ -371,7 +375,7 @@ mod tests {
             "/skip",
             "/help",
         ] {
-            assert!(help.contains(cmd), "{cmd}");
+            assert!(help.contains(command), "{command}");
         }
     }
 

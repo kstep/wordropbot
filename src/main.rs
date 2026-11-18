@@ -8,6 +8,7 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio::time::timeout;
 use wordropbot::bot::BotApp;
 use wordropbot::config::Config;
 use wordropbot::storage::Storage;
@@ -90,10 +91,7 @@ async fn run() -> anyhow::Result<()> {
             scheduler_result = Some((&mut scheduler).await);
         }
     };
-    if tokio::time::timeout(SHUTDOWN_TIMEOUT, stopping)
-        .await
-        .is_err()
-    {
+    if timeout(SHUTDOWN_TIMEOUT, stopping).await.is_err() {
         tracing::warn!(timeout = ?SHUTDOWN_TIMEOUT, "shutdown timed out, aborting tasks");
         dispatcher.abort();
         scheduler.abort();
@@ -120,10 +118,12 @@ async fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::iter;
+
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(std::iter::once("wordropbot").chain(args.iter().copied()))
+        Args::try_parse_from(iter::once("wordropbot").chain(args.iter().copied()))
     }
 
     #[test]
