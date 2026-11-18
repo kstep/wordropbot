@@ -1,0 +1,21 @@
+[Unit]
+Description=wordropbot Telegram bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wordropbot
+Group=wordropbot
+StateDirectory=wordropbot
+WorkingDirectory=/var/lib/wordropbot
+ExecStart=/usr/local/bin/wordropbot --config /etc/wordropbot/config.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

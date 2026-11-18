@@ -235,6 +235,15 @@ join_attempts_per_minute = 5
 "#;
 
     #[test]
+    fn example_config_is_valid() {
+        let c = Config::parse(include_str!("../deploy/config.example.toml")).unwrap();
+        assert_eq!(
+            c.database.path,
+            Path::new("/var/lib/wordropbot/wordropbot.db")
+        );
+    }
+
+    #[test]
     fn parses_valid() {
         let c = Config::parse(VALID).unwrap();
         assert_eq!(c.quiz.options, 3);

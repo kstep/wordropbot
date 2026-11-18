@@ -1,0 +1,24 @@
+[telegram]
+token = "PUT_BOT_TOKEN_HERE"   # не пустой
+
+[database]
+path = "/var/lib/wordropbot/wordropbot.db"
+
+[selection]
+half_life_days = 14.0   # > 0
+prior_error = 0.5       # 0..=1
+prior_strength = 1.0    # > 0
+min_weight = 0.05       # > 0 и <= 1
+
+[quiz]
+options = 3             # 2..=8, включая верный вариант
+
+[schedule]
+default_period = "1d"
+min_period = "1m"
+tick_seconds = 30       # > 0
+
+[limits]
+max_term_chars = 200
+max_translation_chars = 200
+join_attempts_per_minute = 5
