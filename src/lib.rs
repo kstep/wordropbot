@@ -1,3 +1,4 @@
+pub mod bot;
 pub mod code;
 pub mod config;
 pub mod ids;
