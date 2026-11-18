@@ -53,6 +53,14 @@ impl FromStr for Period {
     type Err = ParsePeriodError;
 
     fn from_str(input: &str) -> Result<Period, ParsePeriodError> {
+        // humantime reads `M` as months, and lowercasing would silently turn it
+        // into minutes, so the ambiguous spelling is refused.
+        let is_ambiguous = input
+            .split(|character: char| !character.is_alphabetic())
+            .any(|unit| unit == "M");
+        if is_ambiguous {
+            return Err(ParsePeriodError::Invalid(input.trim().to_owned()));
+        }
         let text = input.trim().to_ascii_lowercase();
         let duration = humantime::parse_duration(&text)
             .map_err(|error| ParsePeriodError::Invalid(error.to_string()))?;
@@ -116,6 +124,7 @@ mod tests {
             ("1.5h", 5400),
             ("1w", 604800),
             ("90s", 90),
+            ("5MIN", 300),
         ] {
             assert_eq!(text.parse::<Period>().unwrap().as_secs(), secs, "{text}");
         }
@@ -127,7 +136,15 @@ mod tests {
         assert_eq!("0s".parse::<Period>(), Err(ParsePeriodError::Zero));
         assert_eq!("500ms".parse::<Period>(), Err(ParsePeriodError::SubSecond));
         assert_eq!("1.5s".parse::<Period>(), Err(ParsePeriodError::SubSecond));
-        for text in ["", "h", "-1h", "soon", "99999999999999999999d"] {
+        for text in [
+            "",
+            "h",
+            "-1h",
+            "soon",
+            "99999999999999999999d",
+            "1M",
+            "1h 30M",
+        ] {
             assert!(
                 matches!(text.parse::<Period>(), Err(ParsePeriodError::Invalid(_))),
                 "{text}"

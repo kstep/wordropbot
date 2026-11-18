@@ -1,11 +1,12 @@
 use std::fmt::{self, Write as _};
 
-use crate::storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView};
+use crate::{
+    config::MAX_MESSAGE_CHARS,
+    storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView},
+};
 
 pub const WORDS_PAGE_SIZE: i64 = 20;
 
-/// Telegram's limit on message length, in characters.
-const MAX_MESSAGE_CHARS: usize = 4096;
 const MAX_BAD_LINES: usize = 20;
 
 const HELP: &str = "\

@@ -8,17 +8,18 @@ use serde::Deserialize;
 
 use crate::period::Period;
 
+/// Telegram's limit on message length, in characters. A longer term or
+/// translation could never be sent.
+pub const MAX_MESSAGE_CHARS: usize = 4096;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("cannot read config {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
-    /// Only the message and line are kept: `toml::de::Error`'s `Display` quotes
-    /// the offending source line, which could leak a malformed token into logs.
-    #[error("invalid config{}: {message}", line.map_or(String::new(), |number| format!(" (line {number})")))]
-    Parse {
-        message: String,
-        line: Option<usize>,
-    },
+    /// Only the line is kept: both `toml::de::Error`'s `Display` and its
+    /// message can quote the offending value, which may be a misplaced token.
+    #[error("invalid config{}: malformed TOML or wrong value type", line.map_or(String::new(), |number| format!(" (line {number})")))]
+    Parse { line: Option<usize> },
     #[error("invalid config: {0}")]
     Invalid(String),
 }
@@ -140,7 +141,6 @@ impl FromStr for Config {
 
     fn from_str(text: &str) -> Result<Config, ConfigError> {
         let config: Config = toml::from_str(text).map_err(|error| ConfigError::Parse {
-            message: error.message().to_owned(),
             line: error
                 .span()
                 .map(|span| text[..span.start].matches('\n').count() + 1),
@@ -161,6 +161,7 @@ impl Config {
 
     fn validate(&self) -> Result<(), ConfigError> {
         let selection = &self.selection;
+        let limits = &self.limits;
         let checks = [
             (
                 !self.telegram.token.trim().is_empty(),
@@ -195,6 +196,18 @@ impl Config {
             (
                 self.schedule.default_period >= self.schedule.min_period,
                 "schedule.default_period must be >= schedule.min_period",
+            ),
+            (
+                (1..=MAX_MESSAGE_CHARS).contains(&limits.max_term_chars),
+                "limits.max_term_chars must be in 1..=4096",
+            ),
+            (
+                (1..=MAX_MESSAGE_CHARS).contains(&limits.max_translation_chars),
+                "limits.max_translation_chars must be in 1..=4096",
+            ),
+            (
+                limits.join_attempts_per_minute > 0,
+                "limits.join_attempts_per_minute must be > 0",
             ),
         ];
         match checks.iter().find(|(ok, _)| !ok) {
@@ -287,6 +300,17 @@ join_attempts_per_minute = 5
             ("default_period = \"1d\"", "default_period = \"soon\""),
             ("default_period = \"1d\"", "default_period = \"30s\""),
             ("token = \"PUT_BOT_TOKEN_HERE\"", "token = \"\""),
+            ("max_term_chars = 200", "max_term_chars = 0"),
+            ("max_term_chars = 200", "max_term_chars = 4097"),
+            ("max_translation_chars = 200", "max_translation_chars = 0"),
+            (
+                "max_translation_chars = 200",
+                "max_translation_chars = 4097",
+            ),
+            (
+                "join_attempts_per_minute = 5",
+                "join_attempts_per_minute = 0",
+            ),
         ] {
             assert!(VALID.contains(from), "{from}");
             assert!(VALID.replace(from, to).parse::<Config>().is_err(), "{to}");
@@ -340,6 +364,17 @@ join_attempts_per_minute = 5
         assert!(!error.to_string().contains("sEcReT"), "{error}");
         assert!(
             matches!(error, ConfigError::Parse { line: Some(2), .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_error_does_not_quote_value() {
+        let result: Result<Config, _> = "telegram = \"123:sEcReT\"\n".parse();
+        let error = result.unwrap_err();
+        assert!(!error.to_string().contains("sEcReT"), "{error}");
+        assert!(
+            matches!(error, ConfigError::Parse { line: Some(1), .. }),
             "{error}"
         );
     }
