@@ -1,10 +1,10 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
     config::Config,
-    ids::{MessageId, QuizId, UserId, WordId},
+    ids::{CollectionId, MessageId, QuizId, UserId, WordId},
     quiz::QuizOptions,
     selection::Weights,
     storage::{Candidate, Storage},
@@ -26,6 +26,10 @@ pub trait QuizSender {
         term: &str,
         options: &[String],
     ) -> impl Future<Output = Result<MessageId, SendError>> + Send;
+
+    /// Removes the buttons from an earlier quiz message. Best effort: the
+    /// message may be gone or too old to edit.
+    fn clear_keyboard(&self, user: UserId, message: MessageId) -> impl Future<Output = ()> + Send;
 }
 
 pub struct ChosenQuiz {
@@ -46,18 +50,27 @@ impl ChosenQuiz {
             .iter()
             .map(|candidate| config.selection.word_weight(&candidate.answers, now))
             .collect();
+        // Distractors come from the word's own collection.
+        let mut pools: HashMap<CollectionId, Vec<&String>> = HashMap::new();
+        for candidate in candidates {
+            pools
+                .entry(candidate.collection_id)
+                .or_default()
+                .extend(&candidate.translations);
+        }
         // Options are built only for the picked word; a word that cannot get
         // them is zeroed and the pick repeated, which equals picking among
         // eligible words only.
         loop {
             let index = weights.iter().copied().collect::<Weights>().pick(rng)?;
             let candidate = &candidates[index];
-            let pool: Vec<String> = candidates
-                .iter()
-                .filter(|other| other.collection_id == candidate.collection_id)
-                .flat_map(|other| other.translations.iter().cloned())
-                .collect();
-            match QuizOptions::new(&candidate.translations, &pool, config.quiz.options, rng) {
+            let pool = &pools[&candidate.collection_id];
+            match QuizOptions::new(
+                &candidate.translations,
+                pool.iter().copied(),
+                config.quiz.options,
+                rng,
+            ) {
                 Some(options) => {
                     return Some(ChosenQuiz {
                         word_id: candidate.word_id,
@@ -78,8 +91,30 @@ pub enum DispatchOutcome {
     NoEligibleWords,
     Blocked,
     Failed,
-    /// The user paused or rescheduled after being picked as due.
-    NotDue,
+}
+
+/// What `/quiz` did for the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuizRequest {
+    /// A new quiz was sent, or the open one was sent again.
+    Sent,
+    Blocked,
+    NoEligibleWords,
+    /// Another quiz became open while this one was being created.
+    Raced,
+    Failed,
+}
+
+impl From<DispatchOutcome> for QuizRequest {
+    fn from(outcome: DispatchOutcome) -> QuizRequest {
+        match outcome {
+            DispatchOutcome::Sent => QuizRequest::Sent,
+            DispatchOutcome::AlreadyOpen => QuizRequest::Raced,
+            DispatchOutcome::NoEligibleWords => QuizRequest::NoEligibleWords,
+            DispatchOutcome::Blocked => QuizRequest::Blocked,
+            DispatchOutcome::Failed => QuizRequest::Failed,
+        }
+    }
 }
 
 pub struct QuizService<S> {
@@ -111,25 +146,51 @@ impl<S: QuizSender> QuizService<S> {
         user: UserId,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
-        let candidates = self.storage.candidates(user).await?;
         let mut rng = StdRng::from_os_rng();
-        Ok(ChosenQuiz::choose(&candidates, &self.config, now, &mut rng).is_some())
+        Ok(self.choose_quiz(user, now, &mut rng).await?.is_some())
     }
 
     /// Scheduler path of `dispatch`: pause and schedule are checked again
-    /// because they can change between listing due users and sending. `/quiz`
-    /// skips this.
+    /// because they can change between listing due users and sending. `None`
+    /// means the user is not due any more. `/quiz` skips this.
     pub async fn dispatch_due(
         &self,
         user: UserId,
         now: Timestamp,
         rng: &mut StdRng,
-    ) -> Result<DispatchOutcome, sqlx::Error> {
+    ) -> Result<Option<DispatchOutcome>, sqlx::Error> {
         match self.storage.get_user(user).await? {
-            Some(row) if !row.paused && row.next_quiz_at <= now => {
-                self.dispatch(user, now, rng).await
+            Some(row) if row.is_due(now) => self.dispatch(user, now, rng).await.map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// `/quiz`: sends the open quiz again, moving its buttons to the new
+    /// message, or else dispatches a new one.
+    pub async fn request_quiz(
+        &self,
+        user: UserId,
+        now: Timestamp,
+        rng: &mut StdRng,
+    ) -> Result<QuizRequest, sqlx::Error> {
+        let Some(open) = self.storage.open_quiz(user).await? else {
+            return Ok(self.dispatch(user, now, rng).await?.into());
+        };
+        match self
+            .sender
+            .send_quiz(user, open.id, &open.term, &open.options)
+            .await
+        {
+            Ok(message_id) => {
+                self.storage.set_quiz_message(open.id, message_id).await?;
+                if let Some(old_message) = open.message_id {
+                    self.sender.clear_keyboard(user, old_message).await;
+                }
+                Ok(QuizRequest::Sent)
             }
-            _ => Ok(DispatchOutcome::NotDue),
+            // The old quiz stays open: only a quiz that was never delivered is
+            // deleted.
+            Err(error) => Ok(self.handle_send_error(user, error, now).await?.into()),
         }
     }
 
@@ -142,8 +203,7 @@ impl<S: QuizSender> QuizService<S> {
         if self.storage.open_quiz(user).await?.is_some() {
             return Ok(DispatchOutcome::AlreadyOpen);
         }
-        let candidates = self.storage.candidates(user).await?;
-        let Some(chosen) = ChosenQuiz::choose(&candidates, &self.config, now, rng) else {
+        let Some(chosen) = self.choose_quiz(user, now, rng).await? else {
             return Ok(DispatchOutcome::NoEligibleWords);
         };
         let Some(quiz_id) = self
@@ -170,17 +230,46 @@ impl<S: QuizSender> QuizService<S> {
             }
             Err(error) => {
                 self.storage.delete_quiz(quiz_id).await?;
-                match error {
-                    SendError::Blocked => {
-                        tracing::info!(%user, "user blocked the bot, pausing quizzes");
-                        self.storage.set_paused(user, true, now).await?;
-                        Ok(DispatchOutcome::Blocked)
-                    }
-                    SendError::Other(message) => {
-                        tracing::warn!(%user, %message, "sending quiz failed");
-                        Ok(DispatchOutcome::Failed)
-                    }
-                }
+                self.handle_send_error(user, error, now).await
+            }
+        }
+    }
+
+    /// The cheap SQL check goes first: when no collection can supply enough
+    /// distinct options, the candidates are not loaded at all.
+    async fn choose_quiz(
+        &self,
+        user: UserId,
+        now: Timestamp,
+        rng: &mut StdRng,
+    ) -> Result<Option<ChosenQuiz>, sqlx::Error> {
+        let options = self.config.quiz.options;
+        if !self
+            .storage
+            .has_enough_distinct_translations(user, options)
+            .await?
+        {
+            return Ok(None);
+        }
+        let candidates = self.storage.candidates(user).await?;
+        Ok(ChosenQuiz::choose(&candidates, &self.config, now, rng))
+    }
+
+    async fn handle_send_error(
+        &self,
+        user: UserId,
+        error: SendError,
+        now: Timestamp,
+    ) -> Result<DispatchOutcome, sqlx::Error> {
+        match error {
+            SendError::Blocked => {
+                tracing::info!(%user, "user blocked the bot, pausing quizzes");
+                self.storage.set_paused(user, true, now).await?;
+                Ok(DispatchOutcome::Blocked)
+            }
+            SendError::Other(message) => {
+                tracing::warn!(%user, %message, "sending quiz failed");
+                Ok(DispatchOutcome::Failed)
             }
         }
     }

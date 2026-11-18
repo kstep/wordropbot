@@ -7,7 +7,7 @@ use crate::{
     time::Timestamp,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
 pub struct User {
     pub id: UserId,
     #[sqlx(rename = "period_secs")]
@@ -15,6 +15,14 @@ pub struct User {
     pub paused: bool,
     pub next_quiz_at: Timestamp,
     pub active_collection_id: Option<CollectionId>,
+}
+
+impl User {
+    /// Whether the scheduler may send a quiz: not paused and the next quiz is
+    /// scheduled at or before `now`. An open quiz is checked separately.
+    pub fn is_due(self, now: Timestamp) -> bool {
+        !self.paused && self.next_quiz_at <= now
+    }
 }
 
 impl Storage {

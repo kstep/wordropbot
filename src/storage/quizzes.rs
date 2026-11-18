@@ -191,6 +191,28 @@ impl Storage {
         Ok(loaded)
     }
 
+    /// Whether some collection of the user holds at least `options` distinct
+    /// translations. A quiz needs the correct option plus `options - 1`
+    /// distinct others from one collection, so this is necessary for any word
+    /// to be eligible, and it is cheaper than loading the candidates.
+    pub async fn has_enough_distinct_translations(
+        &self,
+        user_id: UserId,
+        options: usize,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM memberships m \
+             JOIN words w ON w.collection_id = m.collection_id \
+             JOIN translations t ON t.word_id = w.id \
+             WHERE m.user_id = ? GROUP BY m.collection_id \
+             HAVING COUNT(DISTINCT t.text_norm) >= ?)",
+        )
+        .bind(user_id)
+        .bind(options as i64)
+        .fetch_one(&self.pool)
+        .await
+    }
+
     /// Returns `None` if the user already has an open quiz.
     pub async fn create_quiz(
         &self,
@@ -987,5 +1009,66 @@ mod tests {
         // excluded.
         assert_eq!(stats.hardest[0].term, "w00");
         assert_eq!(stats.hardest[9].term, "w09");
+    }
+
+    #[tokio::test]
+    async fn too_few_distinct_translations_fail_precheck() {
+        let fixture = fixture().await;
+        // Two distinct translations so far; repeats of one add nothing.
+        fixture
+            .storage
+            .import_pairs(
+                fixture.collection,
+                &[pair("a", "стол"), pair("b", "Стол"), pair("c", " стол ")],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !fixture
+                .storage
+                .has_enough_distinct_translations(uid(1), 4)
+                .await
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .storage
+                .has_enough_distinct_translations(uid(1), 3)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn precheck_counts_each_collection_separately() {
+        let fixture = fixture().await;
+        let other = fixture
+            .storage
+            .create_collection(uid(1), "B", &"AAAA-BBBB".parse().unwrap(), ts(0))
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        fixture
+            .storage
+            .import_pairs(other, &[pair("x", "один")])
+            .await
+            .unwrap();
+        // Two translations in the first collection and one in the second do
+        // not add up to three.
+        assert!(
+            !fixture
+                .storage
+                .has_enough_distinct_translations(uid(1), 3)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fixture
+                .storage
+                .has_enough_distinct_translations(uid(3), 1)
+                .await
+                .unwrap()
+        );
     }
 }

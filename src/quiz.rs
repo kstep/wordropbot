@@ -16,9 +16,9 @@ pub struct QuizOptions {
 impl QuizOptions {
     /// One correct option from `own` plus `count - 1` distractors from `pool`,
     /// shuffled. `None` if there are not enough distinct distractors.
-    pub fn new<R: Rng + ?Sized>(
+    pub fn new<'a, R: Rng + ?Sized>(
         own: &[String],
-        pool: &[String],
+        pool: impl IntoIterator<Item = &'a String>,
         count: usize,
         rng: &mut R,
     ) -> Option<QuizOptions> {
@@ -31,7 +31,7 @@ impl QuizOptions {
         let mut seen: HashSet<Normalized> =
             own.iter().map(|option| Normalized::new(option)).collect();
         let distractors: Vec<&String> = pool
-            .iter()
+            .into_iter()
             .filter(|candidate| seen.insert(Normalized::new(candidate)))
             .collect();
         if distractors.len() < count - 1 {

@@ -33,7 +33,7 @@ impl<S: QuizSender> Scheduler<S> {
                 break;
             }
             match self.service.dispatch_due(user, now, rng).await {
-                Ok(DispatchOutcome::Sent) => sent += 1,
+                Ok(Some(DispatchOutcome::Sent)) => sent += 1,
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%user, %error, "quiz dispatch failed"),
             }
@@ -85,7 +85,7 @@ mod tests {
         ids::{CollectionId, MessageId, QuizId, UserId},
         import::ParsedPair,
         period::Period,
-        service::SendError,
+        service::{QuizRequest, SendError},
         storage::Storage,
     };
 
@@ -94,6 +94,7 @@ mod tests {
     #[derive(Default)]
     struct FakeState {
         sent: Vec<(UserId, String)>,
+        cleared: Vec<(UserId, MessageId)>,
         failures: HashMap<UserId, SendError>,
     }
 
@@ -107,6 +108,10 @@ mod tests {
 
         fn sent(&self) -> Vec<(UserId, String)> {
             self.0.lock().unwrap().sent.clone()
+        }
+
+        fn cleared(&self) -> Vec<(UserId, MessageId)> {
+            self.0.lock().unwrap().cleared.clone()
         }
     }
 
@@ -127,6 +132,15 @@ mod tests {
                 }
             };
             future::ready(result)
+        }
+
+        fn clear_keyboard(
+            &self,
+            user: UserId,
+            message: MessageId,
+        ) -> impl Future<Output = ()> + Send {
+            self.0.lock().unwrap().cleared.push((user, message));
+            future::ready(())
         }
     }
 
@@ -390,7 +404,7 @@ mod tests {
             .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
-        assert_eq!(outcome, DispatchOutcome::NotDue);
+        assert_eq!(outcome, None);
         assert!(fixture.sender.sent().is_empty());
     }
 
@@ -408,7 +422,7 @@ mod tests {
             .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
-        assert_eq!(outcome, DispatchOutcome::NotDue);
+        assert_eq!(outcome, None);
         assert!(fixture.sender.sent().is_empty());
     }
 
@@ -471,5 +485,124 @@ mod tests {
             .await
             .expect("run did not exit");
         assert!(fixture.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_translations_give_no_eligible_words() {
+        let fixture = fixture_with_words(1, 0).await;
+        let pairs: Vec<ParsedPair> = (0..6)
+            .map(|i| ParsedPair {
+                term: format!("term{i}"),
+                translation: "одно".into(),
+            })
+            .collect();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &pairs)
+            .await
+            .unwrap();
+        let service = &fixture.scheduler.service;
+        assert!(
+            !service
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            service
+                .dispatch(UserId(1), ts(100), &mut fixture.rng())
+                .await
+                .unwrap(),
+            DispatchOutcome::NoEligibleWords
+        );
+        assert!(fixture.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn passed_precheck_still_needs_a_fitting_word() {
+        // Three distinct translations, but all on one word: they are all
+        // excluded as synonyms, so no distractors remain.
+        let fixture = fixture_with_words(1, 0).await;
+        let pairs: Vec<ParsedPair> = ["один", "два", "три"]
+            .into_iter()
+            .map(|translation| ParsedPair {
+                term: "word".into(),
+                translation: translation.into(),
+            })
+            .collect();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &pairs)
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .storage
+                .has_enough_distinct_translations(UserId(1), 3)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fixture
+                .scheduler
+                .service
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn request_resends_open_quiz_and_clears_old_buttons() {
+        let fixture = fixture_with_words(1, 4).await;
+        let service = &fixture.scheduler.service;
+        let first = service
+            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(first, QuizRequest::Sent);
+        assert!(fixture.sender.cleared().is_empty());
+        let second = service
+            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(second, QuizRequest::Sent);
+        let sent = fixture.sender.sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], sent[1]);
+        assert_eq!(fixture.sender.cleared(), [(UserId(1), FAKE_MESSAGE_ID)]);
+    }
+
+    #[tokio::test]
+    async fn blocked_resend_pauses_user_and_keeps_quiz() {
+        let fixture = fixture_with_words(1, 4).await;
+        let service = &fixture.scheduler.service;
+        service
+            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        fixture.sender.fail(1, SendError::Blocked);
+        let outcome = service
+            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, QuizRequest::Blocked);
+        assert!(
+            fixture
+                .storage
+                .get_user(UserId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .paused
+        );
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

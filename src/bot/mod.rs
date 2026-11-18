@@ -4,7 +4,7 @@ mod handlers;
 pub mod limiter;
 pub mod texts;
 
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 use teloxide::{
     RequestError,
@@ -12,7 +12,7 @@ use teloxide::{
     dispatching::{DefaultKey, ShutdownToken},
     errors::ApiError,
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup},
+    types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId as TgMessageId},
     update_listeners,
 };
 
@@ -67,36 +67,39 @@ impl TelegramSender {
             )]
         }))
     }
-}
 
-impl TelegramSender {
-    /// Sends the quiz message; shared by the scheduler path and `/quiz`
-    /// resends.
-    pub fn send(
+    async fn send(
         &self,
         user: UserId,
         quiz: QuizId,
         term: &str,
         options: &[String],
-    ) -> impl Future<Output = Result<MessageId, RequestError>> + Send {
-        let request = self
+    ) -> Result<MessageId, RequestError> {
+        let sent = self
             .bot
             .send_message(ChatId::from(user), term.to_owned())
-            .reply_markup(TelegramSender::keyboard(quiz, options));
-        async move { Ok(MessageId(request.await?.id.0)) }
+            .reply_markup(TelegramSender::keyboard(quiz, options))
+            .await?;
+        Ok(MessageId(sent.id.0))
     }
 }
 
 impl QuizSender for TelegramSender {
-    fn send_quiz(
+    async fn send_quiz(
         &self,
         user: UserId,
         quiz: QuizId,
         term: &str,
         options: &[String],
-    ) -> impl Future<Output = Result<MessageId, SendError>> + Send {
-        let sent = self.send(user, quiz, term, options);
-        async move { Ok(sent.await?) }
+    ) -> Result<MessageId, SendError> {
+        Ok(self.send(user, quiz, term, options).await?)
+    }
+
+    async fn clear_keyboard(&self, user: UserId, message: MessageId) {
+        let _ = self
+            .bot
+            .edit_message_reply_markup(ChatId::from(user), TgMessageId(message.0))
+            .await;
     }
 }
 

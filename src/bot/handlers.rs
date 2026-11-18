@@ -27,7 +27,7 @@ use crate::{
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
     import::ParseReport,
     period::Period,
-    service::{DispatchOutcome, QuizService},
+    service::{QuizRequest, QuizService},
     storage::{CollectionSummary, Storage},
     time::Timestamp,
 };
@@ -105,7 +105,6 @@ impl View {
 pub struct Handlers {
     bot: TelegramBot,
     storage: Storage,
-    sender: TelegramSender,
     service: QuizService<TelegramSender>,
     config: Arc<Config>,
     limiter: Mutex<JoinLimiter>,
@@ -114,12 +113,11 @@ pub struct Handlers {
 impl Handlers {
     pub fn new(bot: TelegramBot, storage: Storage, config: Arc<Config>) -> Handlers {
         let sender = TelegramSender::new(bot.clone());
-        let service = QuizService::new(storage.clone(), sender.clone(), config.clone());
+        let service = QuizService::new(storage.clone(), sender, config.clone());
         let limiter = Mutex::new(JoinLimiter::new(config.limits.join_attempts_per_minute));
         Handlers {
             bot,
             storage,
-            sender,
             service,
             config,
             limiter,
@@ -408,32 +406,22 @@ impl Handlers {
     }
 
     async fn quiz(&self, user: UserId) -> Reply {
-        if let Some(open) = self.storage.open_quiz(user).await? {
-            let sent = self
-                .sender
-                .send(user, open.id, &open.term, &open.options)
-                .await?;
-            self.storage.set_quiz_message(open.id, sent).await?;
-            self.drop_keyboard(user, open.message_id).await;
-            return Ok(());
-        }
         let mut rng = StdRng::from_os_rng();
         match self
             .service
-            .dispatch(user, Timestamp::now(), &mut rng)
+            .request_quiz(user, Timestamp::now(), &mut rng)
             .await?
         {
-            // `NotDue` comes only from `dispatch_due`.
-            DispatchOutcome::Sent | DispatchOutcome::Blocked | DispatchOutcome::NotDue => Ok(()),
-            DispatchOutcome::AlreadyOpen => self.say(user, "Квиз уже открыт, повтори /quiz.").await,
-            DispatchOutcome::NoEligibleWords => {
+            QuizRequest::Sent | QuizRequest::Blocked => Ok(()),
+            QuizRequest::Raced => self.say(user, "Квиз уже открыт, повтори /quiz.").await,
+            QuizRequest::NoEligibleWords => {
                 self.say(
                     user,
                     "Пока недостаточно слов для квиза: добавь ещё слов в активную коллекцию.",
                 )
                 .await
             }
-            DispatchOutcome::Failed => self.say(user, APOLOGY).await,
+            QuizRequest::Failed => self.say(user, APOLOGY).await,
         }
     }
 
