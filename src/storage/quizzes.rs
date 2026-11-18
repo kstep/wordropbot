@@ -36,6 +36,7 @@ pub struct OpenQuiz {
     pub id: QuizId,
     pub term: String,
     pub options: Vec<String>,
+    pub correct_index: usize,
     pub message_id: Option<MessageId>,
 }
 
@@ -104,10 +105,12 @@ impl QuizScope {
 impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     fn from_row(row: &'r SqliteRow) -> Result<OpenQuiz, sqlx::Error> {
         let options: Json<Vec<String>> = row.try_get("options")?;
+        let correct_index: u32 = row.try_get("correct_index")?;
         Ok(OpenQuiz {
             id: row.try_get("id")?,
             term: row.try_get("term")?,
             options: options.0,
+            correct_index: correct_index as usize,
             message_id: row.try_get("message_id")?,
         })
     }
@@ -267,7 +270,7 @@ impl Storage {
 
     pub async fn open_quiz(&self, user_id: UserId) -> Result<Option<OpenQuiz>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT q.id, w.term, q.options, q.message_id \
+            "SELECT q.id, w.term, q.options, q.correct_index, q.message_id \
              FROM quizzes q JOIN words w ON w.id = q.word_id \
              WHERE q.user_id = ? AND q.answered_at IS NULL",
         )
@@ -889,6 +892,37 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn stored_correct_index_decides_score() {
+        let fixture = fixture().await;
+        // None of these is a translation, so only the stored index can score.
+        let options = ["груша", "стол", "окно"].map(String::from);
+        for (chosen_index, expected) in [(2, true), (0, false)] {
+            let quiz = fixture
+                .storage
+                .create_quiz(user_id(1), fixture.word, &options, 2, timestamp(10))
+                .await
+                .unwrap()
+                .unwrap();
+            let open = fixture
+                .storage
+                .open_quiz(user_id(1))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(open.correct_index, 2);
+            let outcome = fixture
+                .storage
+                .answer_quiz(quiz, user_id(1), chosen_index, timestamp(20))
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, AnswerOutcome::Answered { is_correct, .. } if is_correct == expected),
+                "choice {chosen_index}: {outcome:?}"
+            );
+        }
     }
 
     #[tokio::test]
