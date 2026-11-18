@@ -26,7 +26,8 @@ use crate::{
     period::Period,
     service::{QuizRequest, QuizService},
     storage::{
-        CancelledQuiz, CollectionName, CollectionNameError, CollectionSummary, Storage, User,
+        CancelledQuiz, CollectionError, CollectionName, CollectionNameError, CollectionSummary,
+        Storage, User,
     },
     time::Timestamp,
 };
@@ -271,15 +272,27 @@ impl Handlers {
             let created = self
                 .storage
                 .create_collection(user, name.as_str(), &code, Timestamp::now())
-                .await?;
-            if let Some(collection) = created {
-                let text = format!(
-                    "Коллекция «{}» создана и выбрана активной.\nКод для подключения: {}\n\
-                     Теперь отправь слова обычным сообщением.",
-                    collection.name, collection.code
-                );
-                return self.say(user, text).await;
+                .await;
+            let collection = match created {
+                Ok(Some(collection)) => collection,
+                // The code is taken: try another one.
+                Ok(None) => continue,
+                Err(CollectionError::LimitReached { max }) => {
+                    return self.say(user, Self::collection_limit_text(max)).await;
+                }
+                Err(CollectionError::Storage(error)) => return Err(error.into()),
+            };
+            let text = format!(
+                "Коллекция «{}» создана и выбрана активной.\nКод для подключения: {}\n\
+                 Теперь отправь слова обычным сообщением.",
+                collection.name, collection.code
+            );
+            // The collection is saved: the apology path would invite a retry
+            // that creates a second one.
+            if let Err(error) = self.say(user, text).await {
+                tracing::warn!(%user, %error, "reporting created collection failed");
             }
+            return Ok(());
         }
         Err(HandlerError::NoFreeCode)
     }
@@ -305,17 +318,21 @@ impl Handlers {
         match self
             .storage
             .join_collection(user, &code, Timestamp::now())
-            .await?
+            .await
         {
-            Some(collection) => {
+            Ok(Some(collection)) => {
                 let text = format!("Ты в коллекции «{}», она теперь активная.", collection.name);
                 self.say(user, text).await
             }
-            None => {
+            Ok(None) => {
                 self.limiter().record_failure(user, Timestamp::now());
                 self.say(user, "Коллекции с таким кодом нет. Проверь код.")
                     .await
             }
+            Err(CollectionError::LimitReached { max }) => {
+                self.say(user, Self::collection_limit_text(max)).await
+            }
+            Err(CollectionError::Storage(error)) => Err(error.into()),
         }
     }
 
@@ -337,6 +354,7 @@ impl Handlers {
         let mut reply = ImportReport {
             summary: &summary,
             bad_lines: &report.bad_lines,
+            limits: &self.config.limits,
         }
         .to_string();
         if report.pairs.is_empty() {
@@ -598,6 +616,10 @@ impl Handlers {
         let has_collections = !self.storage.list_collections(user).await?.is_empty();
         self.say(user, NoActiveCollection { has_collections }.to_string())
             .await
+    }
+
+    fn collection_limit_text(max: usize) -> String {
+        format!("У тебя уже максимум коллекций ({max}). Выйди из ненужной через /collection.")
     }
 
     fn with_open_quiz_note(mut text: String, quiz_open: bool) -> String {

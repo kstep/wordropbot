@@ -36,6 +36,14 @@ impl CollectionName {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CollectionError {
+    #[error("storage: {0}")]
+    Storage(#[from] sqlx::Error),
+    #[error("user already has the maximum of {max} collections")]
+    LimitReached { max: usize },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Collection {
     pub id: CollectionId,
@@ -67,8 +75,10 @@ impl Storage {
         name: &str,
         code: &Code,
         now: Timestamp,
-    ) -> Result<Option<Collection>, sqlx::Error> {
+    ) -> Result<Option<Collection>, CollectionError> {
         let mut transaction = self.begin_write().await?;
+        self.check_collection_limit(&mut transaction, user_id)
+            .await?;
         let collection: Option<Collection> = sqlx::query_as(
             "INSERT INTO collections (code, name, created_at) VALUES (?, ?, ?) \
              ON CONFLICT(code) DO NOTHING RETURNING id, code, name",
@@ -87,13 +97,13 @@ impl Storage {
     }
 
     /// Joins (or re-activates an existing membership of) the collection with
-    /// this code.
+    /// this code. Only a new membership counts against the limit.
     pub async fn join_collection(
         &self,
         user_id: UserId,
         code: &Code,
         now: Timestamp,
-    ) -> Result<Option<Collection>, sqlx::Error> {
+    ) -> Result<Option<Collection>, CollectionError> {
         let mut transaction = self.begin_write().await?;
         let collection: Option<Collection> =
             sqlx::query_as("SELECT id, code, name FROM collections WHERE code = ?")
@@ -103,9 +113,29 @@ impl Storage {
         let Some(collection) = collection else {
             return Ok(None);
         };
+        if !Self::is_member(&mut *transaction, user_id, collection.id).await? {
+            self.check_collection_limit(&mut transaction, user_id)
+                .await?;
+        }
         Self::add_membership_and_activate(&mut transaction, user_id, collection.id, now).await?;
         transaction.commit().await?;
         Ok(Some(collection))
+    }
+
+    async fn check_collection_limit(
+        &self,
+        transaction: &mut SqliteConnection,
+        user_id: UserId,
+    ) -> Result<(), CollectionError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memberships WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(transaction)
+            .await?;
+        let max = self.limits.max_collections_per_user;
+        if count >= max as i64 {
+            return Err(CollectionError::LimitReached { max });
+        }
+        Ok(())
     }
 
     pub async fn list_collections(
@@ -229,7 +259,10 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{period::Period, storage::testing::*};
+    use crate::{
+        period::Period,
+        storage::{StorageLimits, testing::*},
+    };
 
     fn code(text: &str) -> Code {
         text.parse().unwrap()
@@ -253,6 +286,65 @@ mod tests {
                 "{blank:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn collection_limit_applies_to_new_memberships_only() {
+        let storage = Storage::in_memory_with_limits(StorageLimits {
+            max_words_per_collection: 5000,
+            max_translations_per_word: 20,
+            max_collections_per_user: 1,
+        })
+        .await;
+        for user in [uid(1), uid(2)] {
+            storage
+                .ensure_user(user, Period::from_secs(60).unwrap(), ts(0))
+                .await
+                .unwrap();
+        }
+        let first = storage
+            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .await
+            .unwrap()
+            .unwrap();
+        storage
+            .create_collection(uid(2), "B", &code("AAAA-AAAA"), ts(0))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            storage
+                .create_collection(uid(1), "C", &code("BBBB-BBBB"), ts(0))
+                .await,
+            Err(CollectionError::LimitReached { max: 1 })
+        ));
+        assert!(matches!(
+            storage
+                .join_collection(uid(1), &code("AAAA-AAAA"), ts(0))
+                .await,
+            Err(CollectionError::LimitReached { max: 1 })
+        ));
+        assert_eq!(storage.list_collections(uid(1)).await.unwrap().len(), 1);
+        // Joining a collection the user is already in adds nothing.
+        assert!(
+            storage
+                .join_collection(uid(1), &code("K7QM-3XPA"), ts(0))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        storage
+            .leave_collection(uid(1), first.id, ts(0))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            storage
+                .join_collection(uid(1), &code("AAAA-AAAA"), ts(0))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]

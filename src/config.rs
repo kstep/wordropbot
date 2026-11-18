@@ -74,6 +74,10 @@ pub struct LimitsConfig {
     pub max_term_chars: usize,
     pub max_translation_chars: usize,
     pub join_attempts_per_minute: u32,
+    pub max_words_per_collection: usize,
+    pub max_translations_per_word: usize,
+    pub max_collections_per_user: usize,
+    pub max_pending_updates_per_user: usize,
 }
 
 impl Default for DatabaseConfig {
@@ -117,6 +121,10 @@ impl Default for LimitsConfig {
             max_term_chars: 200,
             max_translation_chars: 200,
             join_attempts_per_minute: 5,
+            max_words_per_collection: 5000,
+            max_translations_per_word: 20,
+            max_collections_per_user: 20,
+            max_pending_updates_per_user: 16,
         }
     }
 }
@@ -209,6 +217,22 @@ impl Config {
                 limits.join_attempts_per_minute > 0,
                 "limits.join_attempts_per_minute must be > 0",
             ),
+            (
+                limits.max_words_per_collection > 0,
+                "limits.max_words_per_collection must be > 0",
+            ),
+            (
+                limits.max_translations_per_word > 0,
+                "limits.max_translations_per_word must be > 0",
+            ),
+            (
+                limits.max_collections_per_user > 0,
+                "limits.max_collections_per_user must be > 0",
+            ),
+            (
+                limits.max_pending_updates_per_user > 0,
+                "limits.max_pending_updates_per_user must be > 0",
+            ),
         ];
         match checks.iter().find(|(ok, _)| !ok) {
             Some((_, message)) => Err(ConfigError::Invalid((*message).to_owned())),
@@ -252,6 +276,10 @@ tick_seconds = 30       # > 0
 max_term_chars = 200
 max_translation_chars = 200
 join_attempts_per_minute = 5
+max_words_per_collection = 5000
+max_translations_per_word = 20
+max_collections_per_user = 20
+max_pending_updates_per_user = 16
 "#;
 
     #[test]
@@ -311,6 +339,22 @@ join_attempts_per_minute = 5
                 "join_attempts_per_minute = 5",
                 "join_attempts_per_minute = 0",
             ),
+            (
+                "max_words_per_collection = 5000",
+                "max_words_per_collection = 0",
+            ),
+            (
+                "max_translations_per_word = 20",
+                "max_translations_per_word = 0",
+            ),
+            (
+                "max_collections_per_user = 20",
+                "max_collections_per_user = 0",
+            ),
+            (
+                "max_pending_updates_per_user = 16",
+                "max_pending_updates_per_user = 0",
+            ),
         ] {
             assert!(VALID.contains(from), "{from}");
             assert!(VALID.replace(from, to).parse::<Config>().is_err(), "{to}");
@@ -334,6 +378,10 @@ join_attempts_per_minute = 5
         assert_eq!(config.limits.max_term_chars, 200);
         assert_eq!(config.limits.max_translation_chars, 200);
         assert_eq!(config.limits.join_attempts_per_minute, 5);
+        assert_eq!(config.limits.max_words_per_collection, 5000);
+        assert_eq!(config.limits.max_translations_per_word, 20);
+        assert_eq!(config.limits.max_collections_per_user, 20);
+        assert_eq!(config.limits.max_pending_updates_per_user, 16);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::fmt::{self, Write as _};
 
 use crate::{
-    config::MAX_MESSAGE_CHARS,
+    config::{LimitsConfig, MAX_MESSAGE_CHARS},
     storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView},
 };
 
@@ -146,6 +146,7 @@ impl fmt::Display for WordsPage<'_> {
 pub struct ImportReport<'a> {
     pub summary: &'a ImportSummary,
     pub bad_lines: &'a [usize],
+    pub limits: &'a LimitsConfig,
 }
 
 impl fmt::Display for ImportReport<'_> {
@@ -171,6 +172,20 @@ impl fmt::Display for ImportReport<'_> {
                 formatter.write_str(" и другие")?;
             }
             formatter.write_str(".")?;
+        }
+        if self.summary.over_word_limit > 0 {
+            write!(
+                formatter,
+                "\nНе добавлено пар: {} — в коллекции уже максимум слов ({}).",
+                self.summary.over_word_limit, self.limits.max_words_per_collection
+            )?;
+        }
+        if self.summary.over_translation_limit > 0 {
+            write!(
+                formatter,
+                "\nНе добавлено пар: {} — у слова уже максимум переводов ({}).",
+                self.summary.over_translation_limit, self.limits.max_translations_per_word
+            )?;
         }
         Ok(())
     }
@@ -294,10 +309,12 @@ mod tests {
         let summary = ImportSummary {
             added: 2,
             updated: 1,
+            ..ImportSummary::default()
         };
         let text = ImportReport {
             summary: &summary,
             bad_lines: &bad,
+            limits: &LimitsConfig::default(),
         }
         .to_string();
         assert!(text.contains("20"));
@@ -309,13 +326,33 @@ mod tests {
         let summary = ImportSummary {
             added: 2,
             updated: 1,
+            ..ImportSummary::default()
         };
         let text = ImportReport {
             summary: &summary,
             bad_lines: &[],
+            limits: &LimitsConfig::default(),
         }
         .to_string();
         assert!(!text.contains("строки"));
+        assert!(!text.contains("Не добавлено"));
+    }
+
+    #[test]
+    fn import_report_names_pairs_over_limits() {
+        let summary = ImportSummary {
+            over_word_limit: 3,
+            over_translation_limit: 2,
+            ..ImportSummary::default()
+        };
+        let text = ImportReport {
+            summary: &summary,
+            bad_lines: &[],
+            limits: &LimitsConfig::default(),
+        }
+        .to_string();
+        assert!(text.contains("Не добавлено пар: 3 — в коллекции уже максимум слов (5000)."));
+        assert!(text.contains("Не добавлено пар: 2 — у слова уже максимум переводов (20)."));
     }
 
     #[test]

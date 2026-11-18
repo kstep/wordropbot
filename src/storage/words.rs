@@ -13,6 +13,10 @@ use crate::{
 pub struct ImportSummary {
     pub added: u32,
     pub updated: u32,
+    /// Pairs dropped because the collection holds the maximum of words.
+    pub over_word_limit: u32,
+    /// Pairs dropped because their word holds the maximum of translations.
+    pub over_translation_limit: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +29,8 @@ pub struct WordView {
 impl Storage {
     /// Merges the pairs into the collection in one transaction. A word counts
     /// as `updated` only if it existed before this import and gained a
-    /// translation.
+    /// translation. Pairs over the data limits are counted and left out; a word
+    /// is only ever created together with its first translation.
     pub async fn import_pairs(
         &self,
         collection_id: CollectionId,
@@ -35,54 +40,78 @@ impl Storage {
             return Ok(ImportSummary::default());
         }
         let mut transaction = self.begin_write().await?;
+        let mut word_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
+                .bind(collection_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        let mut summary = ImportSummary::default();
         let mut created = HashSet::new();
         let mut updated = HashSet::new();
         for pair in pairs {
             let term_norm = Normalized::new(&pair.term);
-            let inserted: Option<WordId> = sqlx::query_scalar(
-                "INSERT INTO words (collection_id, term, term_norm) VALUES (?, ?, ?) \
-                 ON CONFLICT(collection_id, term_norm) DO NOTHING RETURNING id",
+            let existing: Option<WordId> = sqlx::query_scalar(
+                "SELECT id FROM words WHERE collection_id = ? AND term_norm = ?",
             )
             .bind(collection_id)
-            .bind(&pair.term)
             .bind(term_norm.as_str())
             .fetch_optional(&mut *transaction)
             .await?;
-            let word_id = match inserted {
-                Some(id) => {
+            let word_id = match existing {
+                Some(id) => id,
+                None if word_count >= self.limits.max_words_per_collection as i64 => {
+                    summary.over_word_limit += 1;
+                    continue;
+                }
+                None => {
+                    let id: WordId = sqlx::query_scalar(
+                        "INSERT INTO words (collection_id, term, term_norm) VALUES (?, ?, ?) \
+                         RETURNING id",
+                    )
+                    .bind(collection_id)
+                    .bind(&pair.term)
+                    .bind(term_norm.as_str())
+                    .fetch_one(&mut *transaction)
+                    .await?;
+                    word_count += 1;
                     created.insert(id);
                     id
                 }
-                None => {
-                    sqlx::query_scalar(
-                        "SELECT id FROM words WHERE collection_id = ? AND term_norm = ?",
-                    )
-                    .bind(collection_id)
-                    .bind(term_norm.as_str())
-                    .fetch_one(&mut *transaction)
-                    .await?
-                }
             };
-            let added = sqlx::query(
-                "INSERT INTO translations (word_id, text, text_norm) VALUES (?, ?, ?) \
-                 ON CONFLICT(word_id, text_norm) DO NOTHING",
+            let text_norm = Normalized::new(&pair.translation);
+            let is_known: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM translations WHERE word_id = ? AND text_norm = ?)",
             )
             .bind(word_id)
-            .bind(&pair.translation)
-            .bind(Normalized::new(&pair.translation).as_str())
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected()
-                > 0;
-            if added && !created.contains(&word_id) {
+            .bind(text_norm.as_str())
+            .fetch_one(&mut *transaction)
+            .await?;
+            if is_known {
+                continue;
+            }
+            let translation_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM translations WHERE word_id = ?")
+                    .bind(word_id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            if translation_count >= self.limits.max_translations_per_word as i64 {
+                summary.over_translation_limit += 1;
+                continue;
+            }
+            sqlx::query("INSERT INTO translations (word_id, text, text_norm) VALUES (?, ?, ?)")
+                .bind(word_id)
+                .bind(&pair.translation)
+                .bind(text_norm.as_str())
+                .execute(&mut *transaction)
+                .await?;
+            if !created.contains(&word_id) {
                 updated.insert(word_id);
             }
         }
         transaction.commit().await?;
-        Ok(ImportSummary {
-            added: created.len() as u32,
-            updated: updated.len() as u32,
-        })
+        summary.added = created.len() as u32;
+        summary.updated = updated.len() as u32;
+        Ok(summary)
     }
 
     pub async fn count_words(&self, collection_id: CollectionId) -> Result<i64, sqlx::Error> {
@@ -200,7 +229,7 @@ mod tests {
         ids::{CollectionId, MessageId},
         import::ParsedPair,
         period::Period,
-        storage::{CancelledQuiz, Storage, testing::*},
+        storage::{CancelledQuiz, Storage, StorageLimits, testing::*},
     };
 
     fn pair(term: &str, summary: &str) -> ParsedPair {
@@ -243,6 +272,78 @@ mod tests {
         assert_eq!((summary.added, summary.updated), (1, 0));
         let word = storage.find_word(collection, "run").await.unwrap().unwrap();
         assert_eq!(word.term, "Run");
+        assert_eq!(word.translations, ["бежать", "управлять"]);
+    }
+
+    async fn collection_with_limits(limits: StorageLimits) -> (Storage, CollectionId) {
+        let storage = Storage::in_memory_with_limits(limits).await;
+        storage
+            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
+            .await
+            .unwrap();
+        let code = "K7QM-3XPA".parse().unwrap();
+        let collection = storage
+            .create_collection(uid(1), "A", &code, ts(0))
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        (storage, collection)
+    }
+
+    #[tokio::test]
+    async fn import_keeps_what_fits_under_word_limit() {
+        let (storage, collection) = collection_with_limits(StorageLimits {
+            max_words_per_collection: 2,
+            max_translations_per_word: 20,
+            max_collections_per_user: 20,
+        })
+        .await;
+        let summary = storage
+            .import_pairs(
+                collection,
+                &[
+                    pair("a", "1"),
+                    pair("b", "2"),
+                    pair("c", "3"),
+                    pair("a", "4"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!((summary.added, summary.over_word_limit), (2, 1));
+        assert_eq!(storage.count_words(collection).await.unwrap(), 2);
+        let word = storage.find_word(collection, "a").await.unwrap().unwrap();
+        assert_eq!(word.translations, ["1", "4"]);
+        let next = storage
+            .import_pairs(collection, &[pair("d", "5"), pair("b", "6")])
+            .await
+            .unwrap();
+        assert_eq!((next.updated, next.over_word_limit), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn import_keeps_what_fits_under_translation_limit() {
+        let (storage, collection) = collection_with_limits(StorageLimits {
+            max_words_per_collection: 5000,
+            max_translations_per_word: 2,
+            max_collections_per_user: 20,
+        })
+        .await;
+        let summary = storage
+            .import_pairs(
+                collection,
+                &[
+                    pair("run", "бежать"),
+                    pair("run", "управлять"),
+                    pair("run", "мчаться"),
+                    pair("run", "Бежать"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary.over_translation_limit, 1);
+        let word = storage.find_word(collection, "run").await.unwrap().unwrap();
         assert_eq!(word.translations, ["бежать", "управлять"]);
     }
 

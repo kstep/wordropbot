@@ -13,7 +13,11 @@ use tokio::{
     sync::watch,
     time::timeout,
 };
-use wordropbot::{bot::BotApp, config::Config, storage::Storage};
+use wordropbot::{
+    bot::BotApp,
+    config::Config,
+    storage::{Storage, StorageLimits},
+};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONFIG: &str = "config.toml";
@@ -44,7 +48,8 @@ async fn main() -> ExitCode {
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = Arc::new(Config::load(&args.config)?);
-    let storage = Storage::connect(&config.database.path)
+    let limits = StorageLimits::from(&config.limits);
+    let storage = Storage::connect(&config.database.path, limits)
         .await
         .with_context(|| format!("cannot open database {}", config.database.path.display()))?;
     let dropped = storage.delete_unsent_quizzes().await?;

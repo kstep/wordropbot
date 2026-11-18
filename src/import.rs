@@ -121,7 +121,7 @@ mod tests {
         LimitsConfig {
             max_term_chars: 10,
             max_translation_chars: 10,
-            join_attempts_per_minute: 5,
+            ..LimitsConfig::default()
         }
     }
 
