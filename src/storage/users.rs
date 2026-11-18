@@ -19,18 +19,15 @@ pub struct User {
 #[error("stored period {0} is out of range")]
 struct BadStoredPeriod(i64);
 
-fn period_from_secs(secs: i64) -> Result<Period, sqlx::Error> {
-    u64::try_from(secs)
-        .ok()
-        .and_then(Period::from_secs)
-        .ok_or_else(|| decode_err(BadStoredPeriod(secs)))
+fn stored_period(secs: i64) -> Result<Period, sqlx::Error> {
+    Period::try_from(secs).map_err(|_| decode_err(BadStoredPeriod(secs)))
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for User {
     fn from_row(row: &'r SqliteRow) -> Result<User, sqlx::Error> {
         Ok(User {
             id: row.try_get("id")?,
-            period: period_from_secs(row.try_get("period_secs")?)?,
+            period: stored_period(row.try_get("period_secs")?)?,
             paused: row.try_get("paused")?,
             next_quiz_at: row.try_get("next_quiz_at")?,
             active_collection_id: row.try_get("active_collection_id")?,
@@ -100,16 +97,38 @@ impl Storage {
     ) -> Result<bool, sqlx::Error> {
         let mut tx = self.begin_write().await?;
         let open = has_open_quiz(&mut tx, id).await?;
-        sqlx::query("UPDATE users SET paused = ? WHERE id = ?")
+        let updated = sqlx::query("UPDATE users SET paused = ? WHERE id = ?")
             .bind(paused)
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(false);
+        }
         if !paused && !open {
-            reschedule(&mut tx, id, now).await?;
+            Self::reschedule(&mut tx, id, now).await?;
         }
         tx.commit().await?;
         Ok(open)
+    }
+
+    /// Schedules the user's next quiz one period after `now`. Takes a transaction
+    /// so the period read and the update cannot interleave with another writer.
+    pub(super) async fn reschedule(
+        tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        user_id: UserId,
+        now: Timestamp,
+    ) -> Result<(), sqlx::Error> {
+        let secs: i64 = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        sqlx::query("UPDATE users SET next_quiz_at = ? WHERE id = ?")
+            .bind(now + stored_period(secs)?)
+            .bind(user_id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     pub async fn due_users(&self, now: Timestamp) -> Result<Vec<UserId>, sqlx::Error> {
@@ -126,24 +145,6 @@ impl Storage {
 
 const USER_SELECT_BY_ID: &str = "SELECT id, period_secs, paused, next_quiz_at, active_collection_id \
                                  FROM users WHERE id = ?";
-
-/// Schedules the user's next quiz one period after `now`. Callers run inside a write transaction.
-pub(super) async fn reschedule(
-    tx: &mut sqlx::SqliteConnection,
-    user_id: UserId,
-    now: Timestamp,
-) -> Result<(), sqlx::Error> {
-    let secs: i64 = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE users SET next_quiz_at = ? WHERE id = ?")
-        .bind(now + period_from_secs(secs)?)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    Ok(())
-}
 
 async fn has_open_quiz(
     tx: &mut sqlx::SqliteConnection,
@@ -205,6 +206,13 @@ mod tests {
             s.get_user(uid(1)).await.unwrap().unwrap().next_quiz_at,
             ts(260)
         );
+    }
+
+    #[tokio::test]
+    async fn resuming_unknown_user_is_a_noop() {
+        let s = Storage::in_memory().await;
+        assert!(!s.set_paused(uid(9), false, ts(0)).await.unwrap());
+        assert!(s.get_user(uid(9)).await.unwrap().is_none());
     }
 
     #[tokio::test]

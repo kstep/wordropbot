@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::users::reschedule;
 use super::{CancelledQuiz, Storage, decode_err};
 use crate::config::SelectionConfig;
 use crate::ids::{CollectionId, MessageId, QuizId, UserId, WordId};
@@ -256,7 +255,7 @@ impl Storage {
         if updated.rows_affected() == 0 {
             return Ok(AnswerOutcome::Closed);
         }
-        reschedule(&mut tx, user_id, now).await?;
+        Storage::reschedule(&mut tx, user_id, now).await?;
         let term: String = sqlx::query_scalar("SELECT term FROM words WHERE id = ?")
             .bind(word_id)
             .fetch_one(&mut *tx)
@@ -292,7 +291,7 @@ impl Storage {
         let Some((user_id, message_id)) = deleted else {
             return Ok(None);
         };
-        reschedule(&mut tx, user_id, now).await?;
+        Storage::reschedule(&mut tx, user_id, now).await?;
         tx.commit().await?;
         Ok(Some(CancelledQuiz {
             user_id,

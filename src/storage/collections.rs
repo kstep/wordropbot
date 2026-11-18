@@ -1,7 +1,6 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::users::reschedule;
 use super::{Storage, decode_err};
 use crate::code::Code;
 use crate::ids::{CollectionId, MessageId, UserId};
@@ -184,7 +183,7 @@ impl Storage {
         .fetch_all(&mut *tx)
         .await?;
         if !cancelled.is_empty() {
-            reschedule(&mut tx, user_id, now).await?;
+            Storage::reschedule(&mut tx, user_id, now).await?;
         }
         sqlx::query(
             "UPDATE users SET active_collection_id = NULL WHERE id = ? AND active_collection_id = ?",

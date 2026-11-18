@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use super::Storage;
 use super::collections::CancelledQuiz;
-use super::users::reschedule;
 use crate::ids::{CollectionId, MessageId, UserId, WordId};
 use crate::import::{Normalized, ParsedPair};
 use crate::time::Timestamp;
@@ -176,7 +175,7 @@ impl Storage {
         .fetch_all(&mut *tx)
         .await?;
         for &(owner, _) in &open {
-            reschedule(&mut tx, owner, now).await?;
+            Storage::reschedule(&mut tx, owner, now).await?;
         }
         sqlx::query("DELETE FROM words WHERE id = ?")
             .bind(word_id)

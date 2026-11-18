@@ -31,6 +31,18 @@ impl Period {
     }
 }
 
+impl TryFrom<i64> for Period {
+    type Error = ParsePeriodError;
+
+    fn try_from(secs: i64) -> Result<Period, ParsePeriodError> {
+        match secs {
+            0 => Err(ParsePeriodError::Zero),
+            s if s < 0 => Err(ParsePeriodError::Invalid(s.to_string())),
+            s => Ok(Period(s)),
+        }
+    }
+}
+
 impl FromStr for Period {
     type Err = ParsePeriodError;
 
@@ -104,6 +116,16 @@ mod tests {
         assert_eq!(Period::from_secs(0), None);
         assert_eq!(Period::from_secs(i64::MAX as u64 + 1), None);
         assert_eq!(Period::from_secs(60).unwrap().as_secs(), 60);
+    }
+
+    #[test]
+    fn try_from_i64_checks_range() {
+        assert_eq!(Period::try_from(0), Err(ParsePeriodError::Zero));
+        assert!(matches!(
+            Period::try_from(-5),
+            Err(ParsePeriodError::Invalid(_))
+        ));
+        assert_eq!(Period::try_from(60).unwrap().as_secs(), 60);
     }
 
     #[test]
