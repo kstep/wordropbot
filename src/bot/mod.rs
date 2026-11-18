@@ -14,6 +14,7 @@ use teloxide::dispatching::{DefaultKey, ShutdownToken};
 use teloxide::errors::ApiError;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+use teloxide::update_listeners;
 
 use crate::bot::callback::CallbackAction;
 use crate::bot::handlers::Handlers;
@@ -78,6 +79,7 @@ impl QuizSender for TelegramSender {
 
 /// The Telegram update dispatcher together with everything it needs.
 pub struct BotApp {
+    bot: TelegramBot,
     dispatcher: Dispatcher<TelegramBot, Infallible, DefaultKey>,
     sender: TelegramSender,
     storage: Storage,
@@ -98,25 +100,19 @@ impl BotApp {
                         Ok::<(), Infallible>(())
                     }),
             )
-            .branch(
-                Update::filter_callback_query()
-                    .filter(|query: CallbackQuery| {
-                        query
-                            .message
-                            .as_ref()
-                            .is_some_and(|m| m.chat().is_private())
-                    })
-                    .endpoint(|query: CallbackQuery, handlers: Arc<Handlers>| async move {
-                        handlers.on_callback(query).await;
-                        Ok::<(), Infallible>(())
-                    }),
-            );
-        let dispatcher = Dispatcher::builder(bot, schema)
+            .branch(Update::filter_callback_query().endpoint(
+                |query: CallbackQuery, handlers: Arc<Handlers>| async move {
+                    handlers.on_callback(query).await;
+                    Ok::<(), Infallible>(())
+                },
+            ));
+        let dispatcher = Dispatcher::builder(bot.clone(), schema)
             .dependencies(dptree::deps![handlers])
             // The default handler logs the whole update; unhandled kinds are simply ignored.
             .default_handler(|_| async {})
             .build();
         BotApp {
+            bot,
             dispatcher,
             sender,
             storage,
@@ -136,7 +132,12 @@ impl BotApp {
         self.dispatcher.shutdown_token()
     }
 
-    pub async fn run(mut self) {
-        self.dispatcher.dispatch().await;
+    /// Fails if Telegram cannot be reached at start (bad token, no network).
+    pub async fn run(mut self) -> Result<(), RequestError> {
+        let listener = update_listeners::polling_default(self.bot.clone()).await;
+        let errors = LoggingErrorHandler::with_custom_text("An error from the update listener");
+        self.dispatcher
+            .try_dispatch_with_listener(listener, errors)
+            .await
     }
 }

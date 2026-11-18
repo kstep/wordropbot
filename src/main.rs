@@ -61,27 +61,45 @@ async fn run() -> anyhow::Result<()> {
     let token = app.shutdown_token();
     let (stop, stopped) = watch::channel(false);
     let scheduler = tokio::spawn(app.scheduler().run(stopped));
-    let dispatcher = tokio::spawn(app.run());
+    let mut dispatcher = tokio::spawn(app.run());
     tracing::info!("bot started");
 
-    tokio::select! {
-        _ = sigterm.recv() => tracing::info!("SIGTERM received, shutting down"),
-        _ = sigint.recv() => tracing::info!("SIGINT received, shutting down"),
-    }
+    let early_exit = tokio::select! {
+        _ = sigterm.recv() => { tracing::info!("SIGTERM received, shutting down"); None }
+        _ = sigint.recv() => { tracing::info!("SIGINT received, shutting down"); None }
+        // The dispatcher fails at start without Telegram; keep running only if it runs.
+        result = &mut dispatcher => Some(result),
+    };
     // Receivers may already be gone if the scheduler stopped on its own.
     let _ = stop.send(true);
-    match token.shutdown() {
-        Ok(done) => done.await,
-        // The dispatcher is not polling updates yet (or any more), so there is nothing to wait for.
-        Err(_) => dispatcher.abort(),
-    }
+    let signalled = early_exit.is_none();
+    let outcome = match early_exit {
+        Some(result) => result,
+        None => match token.shutdown() {
+            // A dispatcher that dies while shutting down never completes `done`.
+            Ok(done) => tokio::select! {
+                _ = done => dispatcher.await,
+                result = &mut dispatcher => result,
+            },
+            // Not polling updates yet (or any more): nothing to wait for.
+            Err(_) => {
+                dispatcher.abort();
+                dispatcher.await
+            }
+        },
+    };
     if let Err(error) = scheduler.await {
         tracing::error!(%error, "scheduler task failed");
     }
-    // An aborted task reports as cancelled; that is expected here.
-    let _ = dispatcher.await;
     storage.close().await;
-    Ok(())
+    match outcome {
+        Ok(Ok(())) if signalled => Ok(()),
+        Ok(Ok(())) => bail!("telegram dispatcher stopped unexpectedly"),
+        Ok(Err(error)) => bail!("telegram dispatcher failed: {error}"),
+        // Aborting is how an idle dispatcher is stopped on a signal.
+        Err(error) if error.is_cancelled() && signalled => Ok(()),
+        Err(error) => bail!("telegram dispatcher task failed: {error}"),
+    }
 }
 
 #[cfg(test)]
