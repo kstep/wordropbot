@@ -1,5 +1,6 @@
 mod collections;
 mod users;
+mod words;
 
 use std::path::Path;
 use std::time::Duration;
