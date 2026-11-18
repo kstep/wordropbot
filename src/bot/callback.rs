@@ -51,21 +51,23 @@ impl FromStr for CallbackAction {
     type Err = ParseCallbackError;
 
     fn from_str(data: &str) -> Result<CallbackAction, ParseCallbackError> {
-        fn num<T: FromStr>(text: &str) -> Result<T, ParseCallbackError> {
+        fn parse_part<T: FromStr>(text: &str) -> Result<T, ParseCallbackError> {
             text.parse().map_err(|_| ParseCallbackError)
         }
         let mut parts = data.split(':');
         let action = match (parts.next(), parts.next(), parts.next()) {
             (Some("a"), Some(quiz), Some(index)) => CallbackAction::Answer {
-                quiz: QuizId(num(quiz)?),
-                index: num(index)?,
+                quiz: QuizId(parse_part(quiz)?),
+                index: parse_part(index)?,
             },
-            (Some("c"), Some(id), None) => CallbackAction::Activate(CollectionId(num(id)?)),
-            (Some("l"), Some(id), None) => CallbackAction::LeaveAsk(CollectionId(num(id)?)),
-            (Some("y"), Some(id), None) => CallbackAction::LeaveConfirm(CollectionId(num(id)?)),
-            (Some("r"), Some(id), None) => CallbackAction::RemoveConfirm(WordId(num(id)?)),
-            (Some("w"), Some(page), None) => CallbackAction::WordsPage(num(page)?),
-            (Some("p"), Some(page), None) => CallbackAction::CollectionsPage(num(page)?),
+            (Some("c"), Some(id), None) => CallbackAction::Activate(CollectionId(parse_part(id)?)),
+            (Some("l"), Some(id), None) => CallbackAction::LeaveAsk(CollectionId(parse_part(id)?)),
+            (Some("y"), Some(id), None) => {
+                CallbackAction::LeaveConfirm(CollectionId(parse_part(id)?))
+            }
+            (Some("r"), Some(id), None) => CallbackAction::RemoveConfirm(WordId(parse_part(id)?)),
+            (Some("w"), Some(page), None) => CallbackAction::WordsPage(parse_part(page)?),
+            (Some("p"), Some(page), None) => CallbackAction::CollectionsPage(parse_part(page)?),
             (Some("d"), None, None) => CallbackAction::Dismiss,
             _ => return Err(ParseCallbackError),
         };

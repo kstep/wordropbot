@@ -253,7 +253,7 @@ impl Config {
                 "limits.max_pending_updates_per_user must be > 0",
             ),
         ];
-        match checks.iter().find(|(ok, _)| !ok) {
+        match checks.iter().find(|(is_valid, _)| !is_valid) {
             Some((_, message)) => Err(ConfigError::Invalid((*message).to_owned())),
             None => Ok(()),
         }

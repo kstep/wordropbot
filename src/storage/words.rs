@@ -236,7 +236,7 @@ mod tests {
 
     async fn setup_collection() -> (Storage, CollectionId) {
         let storage = Storage::in_memory().await;
-        let collection = user_with_collection(&storage, uid(1), CODE).await;
+        let collection = user_with_collection(&storage, user_id(1), CODE).await;
         (storage, collection)
     }
 
@@ -262,7 +262,7 @@ mod tests {
 
     async fn collection_with_limits(limits: StorageLimits) -> (Storage, CollectionId) {
         let storage = Storage::in_memory_with_limits(limits).await;
-        let collection = user_with_collection(&storage, uid(1), CODE).await;
+        let collection = user_with_collection(&storage, user_id(1), CODE).await;
         (storage, collection)
     }
 
@@ -346,7 +346,7 @@ mod tests {
         let (storage, first_collection) = setup_collection().await;
         let code = "AAAA-BBBB".parse().unwrap();
         let second_collection = storage
-            .create_collection(uid(1), "B", &code, ts(0))
+            .create_collection(user_id(1), "B", &code, timestamp(0))
             .await
             .unwrap()
             .unwrap()
@@ -390,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn remove_requires_membership() {
         let (storage, collection) = setup_collection().await;
-        add_user(&storage, uid(2)).await;
+        add_user(&storage, user_id(2)).await;
         storage
             .import_pairs(collection, &[pair("run", "бежать")])
             .await
@@ -403,14 +403,14 @@ mod tests {
             .id;
         assert!(
             storage
-                .remove_word(uid(2), id, ts(0))
+                .remove_word(user_id(2), id, timestamp(0))
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             storage
-                .remove_word(uid(1), id, ts(0))
+                .remove_word(user_id(1), id, timestamp(0))
                 .await
                 .unwrap()
                 .is_some()
@@ -428,11 +428,11 @@ mod tests {
     async fn remove_cancels_open_quizzes_and_reschedules_owners() {
         let (storage, collection) = setup_collection().await;
         storage
-            .ensure_user(uid(2), Period::from_secs(100).unwrap(), ts(0))
+            .ensure_user(user_id(2), Period::from_secs(100).unwrap(), timestamp(0))
             .await
             .unwrap();
         storage
-            .join_collection(uid(2), &CODE.parse().unwrap(), ts(0))
+            .join_collection(user_id(2), &CODE.parse().unwrap(), timestamp(0))
             .await
             .unwrap();
         storage
@@ -446,32 +446,35 @@ mod tests {
             .unwrap()
             .id;
         let quiz = storage
-            .create_quiz(uid(2), id, &["бежать".into()], 0, ts(0))
+            .create_quiz(user_id(2), id, &["бежать".into()], 0, timestamp(0))
             .await
             .unwrap()
             .unwrap();
-        storage.set_quiz_message(quiz, mid(77)).await.unwrap();
+        storage
+            .set_quiz_message(quiz, message_id(77))
+            .await
+            .unwrap();
         let cancelled = storage
-            .remove_word(uid(1), id, ts(1000))
+            .remove_word(user_id(1), id, timestamp(1000))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             cancelled,
             [CancelledQuiz {
-                user_id: uid(2),
-                message_id: Some(mid(77))
+                user_id: user_id(2),
+                message_id: Some(message_id(77))
             }]
         );
-        assert!(storage.open_quiz(uid(2)).await.unwrap().is_none());
+        assert!(storage.open_quiz(user_id(2)).await.unwrap().is_none());
         assert_eq!(
             storage
-                .answer_quiz(quiz, uid(2), 0, ts(1001))
+                .answer_quiz(quiz, user_id(2), 0, timestamp(1001))
                 .await
                 .unwrap(),
             AnswerOutcome::Closed
         );
-        assert_eq!(next_quiz_at(&storage, uid(2)).await, ts(1100));
-        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(0));
+        assert_eq!(next_quiz_at(&storage, user_id(2)).await, timestamp(1100));
+        assert_eq!(next_quiz_at(&storage, user_id(1)).await, timestamp(0));
     }
 }

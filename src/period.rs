@@ -23,10 +23,10 @@ pub enum ParsePeriodError {
 
 impl Period {
     /// `None` for zero or more than `i64::MAX`.
-    pub fn from_secs(secs: u64) -> Option<Period> {
-        i64::try_from(secs)
+    pub fn from_secs(seconds: u64) -> Option<Period> {
+        i64::try_from(seconds)
             .ok()
-            .and_then(|secs| Period::try_from(secs).ok())
+            .and_then(|seconds| Period::try_from(seconds).ok())
     }
 
     pub fn as_secs(self) -> i64 {
@@ -37,11 +37,11 @@ impl Period {
 impl TryFrom<i64> for Period {
     type Error = ParsePeriodError;
 
-    fn try_from(secs: i64) -> Result<Period, ParsePeriodError> {
-        match secs {
+    fn try_from(seconds: i64) -> Result<Period, ParsePeriodError> {
+        match seconds {
             0 => Err(ParsePeriodError::Zero),
-            secs if secs < 0 => Err(ParsePeriodError::Invalid(secs.to_string())),
-            secs => Ok(Period(secs)),
+            seconds if seconds < 0 => Err(ParsePeriodError::Invalid(seconds.to_string())),
+            seconds => Ok(Period(seconds)),
         }
     }
 }
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn parses_supported_forms() {
-        for (text, secs) in [
+        for (text, seconds) in [
             ("30m", 1800),
             ("2h", 7200),
             ("1d", 86400),
@@ -107,7 +107,7 @@ mod tests {
             ("90s", 90),
             ("5MIN", 300),
         ] {
-            assert_eq!(text.parse::<Period>().unwrap().as_secs(), secs, "{text}");
+            assert_eq!(text.parse::<Period>().unwrap().as_secs(), seconds, "{text}");
         }
     }
 
@@ -152,8 +152,8 @@ mod tests {
 
     #[test]
     fn display_roundtrips() {
-        for secs in [1, 60, 90, 5400, 86400, 604800, 2_630_016] {
-            let period = Period::from_secs(secs).unwrap();
+        for seconds in [1, 60, 90, 5400, 86400, 604800, 2_630_016] {
+            let period = Period::from_secs(seconds).unwrap();
             assert_eq!(
                 period.to_string().parse::<Period>().unwrap(),
                 period,

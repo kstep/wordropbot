@@ -293,48 +293,48 @@ mod tests {
             max_collections_per_user: 1,
         })
         .await;
-        for user in [uid(1), uid(2)] {
+        for user in [user_id(1), user_id(2)] {
             add_user(&storage, user).await;
         }
         let first = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         storage
-            .create_collection(uid(2), "B", &code("AAAA-AAAA"), ts(0))
+            .create_collection(user_id(2), "B", &code("AAAA-AAAA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(
             storage
-                .create_collection(uid(1), "C", &code("BBBB-BBBB"), ts(0))
+                .create_collection(user_id(1), "C", &code("BBBB-BBBB"), timestamp(0))
                 .await,
             Err(CollectionError::LimitReached { max: 1 })
         ));
         assert!(matches!(
             storage
-                .join_collection(uid(1), &code("AAAA-AAAA"), ts(0))
+                .join_collection(user_id(1), &code("AAAA-AAAA"), timestamp(0))
                 .await,
             Err(CollectionError::LimitReached { max: 1 })
         ));
-        assert_eq!(storage.list_collections(uid(1)).await.unwrap().len(), 1);
+        assert_eq!(storage.list_collections(user_id(1)).await.unwrap().len(), 1);
         // Joining a collection the user is already in adds nothing.
         assert!(
             storage
-                .join_collection(uid(1), &code("K7QM-3XPA"), ts(0))
+                .join_collection(user_id(1), &code("K7QM-3XPA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_some()
         );
         storage
-            .leave_collection(uid(1), first.id, ts(0))
+            .leave_collection(user_id(1), first.id, timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(
             storage
-                .join_collection(uid(1), &code("AAAA-AAAA"), ts(0))
+                .join_collection(user_id(1), &code("AAAA-AAAA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_some()
@@ -344,16 +344,16 @@ mod tests {
     #[tokio::test]
     async fn join_makes_collection_active() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
-        add_user(&storage, uid(2)).await;
+        add_user(&storage, user_id(1)).await;
+        add_user(&storage, user_id(2)).await;
         let collection = storage
-            .create_collection(uid(1), "Греческий", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "Греческий", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             storage
-                .join_collection(uid(2), &code("K7QM-3XPA"), ts(0))
+                .join_collection(user_id(2), &code("K7QM-3XPA"), timestamp(0))
                 .await
                 .unwrap()
                 .unwrap()
@@ -362,7 +362,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .get_user(uid(2))
+                .get_user(user_id(2))
                 .await
                 .unwrap()
                 .unwrap()
@@ -371,7 +371,7 @@ mod tests {
         );
         assert!(
             storage
-                .join_collection(uid(2), &code("AAAA-AAAA"), ts(0))
+                .join_collection(user_id(2), &code("AAAA-AAAA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_none()
@@ -381,15 +381,15 @@ mod tests {
     #[tokio::test]
     async fn duplicate_code_returns_none() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
+        add_user(&storage, user_id(1)).await;
         storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(
             storage
-                .create_collection(uid(1), "B", &code("K7QM-3XPA"), ts(0))
+                .create_collection(user_id(1), "B", &code("K7QM-3XPA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_none()
@@ -399,42 +399,42 @@ mod tests {
     #[tokio::test]
     async fn last_member_leaving_deletes_collection() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
-        add_user(&storage, uid(2)).await;
+        add_user(&storage, user_id(1)).await;
+        add_user(&storage, user_id(2)).await;
         let collection = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         storage
-            .join_collection(uid(2), &code("K7QM-3XPA"), ts(0))
+            .join_collection(user_id(2), &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap();
         storage
-            .leave_collection(uid(1), collection.id, ts(0))
+            .leave_collection(user_id(1), collection.id, timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(
             storage
-                .join_collection(uid(1), &code("K7QM-3XPA"), ts(0))
+                .join_collection(user_id(1), &code("K7QM-3XPA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_some()
         );
         storage
-            .leave_collection(uid(1), collection.id, ts(0))
+            .leave_collection(user_id(1), collection.id, timestamp(0))
             .await
             .unwrap()
             .unwrap();
         storage
-            .leave_collection(uid(2), collection.id, ts(0))
+            .leave_collection(user_id(2), collection.id, timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(
             storage
-                .join_collection(uid(1), &code("K7QM-3XPA"), ts(0))
+                .join_collection(user_id(1), &code("K7QM-3XPA"), timestamp(0))
                 .await
                 .unwrap()
                 .is_none()
@@ -444,22 +444,22 @@ mod tests {
     #[tokio::test]
     async fn non_member_cannot_touch_collection() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
-        add_user(&storage, uid(2)).await;
+        add_user(&storage, user_id(1)).await;
+        add_user(&storage, user_id(2)).await;
         let collection = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         assert!(
             !storage
-                .set_active_collection(uid(2), collection.id)
+                .set_active_collection(user_id(2), collection.id)
                 .await
                 .unwrap()
         );
         assert!(
             storage
-                .leave_collection(uid(2), collection.id, ts(0))
+                .leave_collection(user_id(2), collection.id, timestamp(0))
                 .await
                 .unwrap()
                 .is_none()
@@ -469,32 +469,32 @@ mod tests {
     #[tokio::test]
     async fn rejoin_keeps_membership_and_reactivates() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
+        add_user(&storage, user_id(1)).await;
         let first_collection = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         storage
-            .create_collection(uid(1), "B", &code("AAAA-AAAA"), ts(0))
+            .create_collection(user_id(1), "B", &code("AAAA-AAAA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         storage
-            .join_collection(uid(1), &code("K7QM-3XPA"), ts(5))
+            .join_collection(user_id(1), &code("K7QM-3XPA"), timestamp(5))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             storage
-                .get_user(uid(1))
+                .get_user(user_id(1))
                 .await
                 .unwrap()
                 .unwrap()
                 .active_collection_id,
             Some(first_collection.id)
         );
-        let list = storage.list_collections(uid(1)).await.unwrap();
+        let list = storage.list_collections(user_id(1)).await.unwrap();
         assert_eq!(list.len(), 2);
         assert!(
             list.iter()
@@ -507,14 +507,14 @@ mod tests {
     #[tokio::test]
     async fn leaving_cancels_open_quiz_of_this_collection_only() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
+        add_user(&storage, user_id(1)).await;
         let first_collection = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         let second_collection = storage
-            .create_collection(uid(1), "B", &code("AAAA-AAAA"), ts(0))
+            .create_collection(user_id(1), "B", &code("AAAA-AAAA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
@@ -528,21 +528,24 @@ mod tests {
             .unwrap()
             .unwrap();
         let quiz = storage
-            .create_quiz(uid(1), word.id, &["б".into()], 0, ts(0))
+            .create_quiz(user_id(1), word.id, &["б".into()], 0, timestamp(0))
             .await
             .unwrap()
             .unwrap();
-        storage.set_quiz_message(quiz, mid(42)).await.unwrap();
+        storage
+            .set_quiz_message(quiz, message_id(42))
+            .await
+            .unwrap();
         // Leaving B (the active one) must not touch the quiz from A.
         let cancelled = storage
-            .leave_collection(uid(1), second_collection.id, ts(100))
+            .leave_collection(user_id(1), second_collection.id, timestamp(100))
             .await
             .unwrap()
             .unwrap();
         assert!(cancelled.is_empty());
         assert_eq!(
             storage
-                .get_user(uid(1))
+                .get_user(user_id(1))
                 .await
                 .unwrap()
                 .unwrap()
@@ -550,40 +553,40 @@ mod tests {
             None
         );
         let cancelled = storage
-            .leave_collection(uid(1), first_collection.id, ts(100))
+            .leave_collection(user_id(1), first_collection.id, timestamp(100))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             cancelled,
             [CancelledQuiz {
-                user_id: uid(1),
-                message_id: Some(mid(42))
+                user_id: user_id(1),
+                message_id: Some(message_id(42))
             }]
         );
-        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(160));
+        assert_eq!(next_quiz_at(&storage, user_id(1)).await, timestamp(160));
     }
 
     #[tokio::test]
     async fn list_works_without_active_collection() {
         let storage = Storage::in_memory().await;
-        add_user(&storage, uid(1)).await;
+        add_user(&storage, user_id(1)).await;
         let first_collection = storage
-            .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
+            .create_collection(user_id(1), "A", &code("K7QM-3XPA"), timestamp(0))
             .await
             .unwrap()
             .unwrap();
         let second_collection = storage
-            .create_collection(uid(1), "B", &code("AAAA-AAAA"), ts(1))
+            .create_collection(user_id(1), "B", &code("AAAA-AAAA"), timestamp(1))
             .await
             .unwrap()
             .unwrap();
         storage
-            .leave_collection(uid(1), second_collection.id, ts(2))
+            .leave_collection(user_id(1), second_collection.id, timestamp(2))
             .await
             .unwrap()
             .unwrap();
-        let list = storage.list_collections(uid(1)).await.unwrap();
+        let list = storage.list_collections(user_id(1)).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, first_collection.id);
         assert!(!list[0].is_active);

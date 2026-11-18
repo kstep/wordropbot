@@ -49,10 +49,10 @@ impl FromIterator<f64> for Weights {
 impl Weights {
     /// Picks an index proportionally to the weights; `None` if empty or all
     /// zero/invalid.
-    pub fn pick<R: Rng + ?Sized>(&self, rng: &mut R) -> Option<usize> {
+    pub fn pick<R: Rng + ?Sized>(&self, random_generator: &mut R) -> Option<usize> {
         WeightedIndex::new(&self.0)
             .ok()
-            .map(|distribution| distribution.sample(rng))
+            .map(|distribution| distribution.sample(random_generator))
     }
 }
 
@@ -61,7 +61,7 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
-    use crate::testing::ts;
+    use crate::testing::timestamp;
 
     const DAY: i64 = 86_400;
     fn config() -> SelectionConfig {
@@ -70,7 +70,7 @@ mod tests {
     fn correct(at: i64, count: usize) -> Vec<AnswerRecord> {
         vec![
             AnswerRecord {
-                answered_at: ts(at),
+                answered_at: timestamp(at),
                 is_correct: true
             };
             count
@@ -82,18 +82,18 @@ mod tests {
     #[test]
     fn word_weight_follows_answer_history() {
         let cases = [
-            ("new word", Vec::new(), ts(0), 0.525, 1e-9),
+            ("new word", Vec::new(), timestamp(0), 0.525, 1e-9),
             (
                 "ten fresh correct",
                 correct(1000, 10),
-                ts(1000),
+                timestamp(1000),
                 0.0932,
                 1e-3,
             ),
             (
                 "ten correct 60 days ago",
                 correct(0, 10),
-                ts(60 * DAY),
+                timestamp(60 * DAY),
                 0.364,
                 1e-3,
             ),
@@ -110,17 +110,17 @@ mod tests {
             ..config()
         };
         let wrong = [AnswerRecord {
-            answered_at: ts(0),
+            answered_at: timestamp(0),
             is_correct: false,
         }];
         // w = 0.5, p = 0.5 / (0.5 + 1)
-        assert!((config.error_rate(&wrong, ts(14 * DAY)) - 1.0 / 3.0).abs() < 1e-9);
+        assert!((config.error_rate(&wrong, timestamp(14 * DAY)) - 1.0 / 3.0).abs() < 1e-9);
     }
     #[test]
     fn future_answer_has_zero_age() {
         assert_eq!(
-            config().word_weight(&correct(500, 1), ts(100)),
-            config().word_weight(&correct(100, 1), ts(100))
+            config().word_weight(&correct(500, 1), timestamp(100)),
+            config().word_weight(&correct(100, 1), timestamp(100))
         );
     }
     #[test]
@@ -129,12 +129,12 @@ mod tests {
             prior_error: 0.0,
             ..config()
         };
-        assert!((config.word_weight(&correct(0, 1000), ts(0)) - 0.05).abs() < 1e-9);
+        assert!((config.word_weight(&correct(0, 1000), timestamp(0)) - 0.05).abs() < 1e-9);
     }
     #[test]
     fn pick_handles_edges() {
-        let mut rng = StdRng::seed_from_u64(1);
-        assert_eq!(weights(&[]).pick(&mut rng), None);
-        assert_eq!(weights(&[0.0, 1.0]).pick(&mut rng), Some(1));
+        let mut random_generator = StdRng::seed_from_u64(1);
+        assert_eq!(weights(&[]).pick(&mut random_generator), None);
+        assert_eq!(weights(&[0.0, 1.0]).pick(&mut random_generator), Some(1));
     }
 }

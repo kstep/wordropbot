@@ -23,7 +23,7 @@ impl<S: QuizSender> Scheduler<S> {
     pub async fn tick(
         &self,
         now: Timestamp,
-        rng: &mut StdRng,
+        random_generator: &mut StdRng,
         shutdown: &watch::Receiver<bool>,
     ) -> Result<usize, sqlx::Error> {
         let mut sent = 0;
@@ -32,7 +32,7 @@ impl<S: QuizSender> Scheduler<S> {
             if *shutdown.borrow() {
                 break;
             }
-            match self.service.dispatch_due(user, now, rng).await {
+            match self.service.dispatch_due(user, now, random_generator).await {
                 Ok(Some(DispatchOutcome::Sent)) => sent += 1,
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%user, %error, "quiz dispatch failed"),
@@ -43,7 +43,7 @@ impl<S: QuizSender> Scheduler<S> {
 
     /// Ticks until `shutdown` turns true or its sender is dropped.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
-        let mut rng = StdRng::from_os_rng();
+        let mut random_generator = StdRng::from_os_rng();
         let mut interval = time::interval(self.service.tick_interval());
         // A slow tick should not be followed by a burst of catch-up ticks.
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -55,7 +55,7 @@ impl<S: QuizSender> Scheduler<S> {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(error) = self.tick(Timestamp::now(), &mut rng, &shutdown).await {
+                    if let Err(error) = self.tick(Timestamp::now(), &mut random_generator, &shutdown).await {
                         tracing::error!(%error, "scheduler tick failed");
                     }
                 }
@@ -79,7 +79,7 @@ mod tests {
     use crate::{
         ids::UserId,
         service::SendError,
-        testing::{FAKE_MESSAGE_ID, FakeSender, QuizFixture, add_user, next_quiz_at, ts},
+        testing::{FAKE_MESSAGE_ID, FakeSender, QuizFixture, add_user, next_quiz_at, timestamp},
     };
 
     struct Fixture {
@@ -112,7 +112,11 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             1
@@ -134,13 +138,21 @@ mod tests {
         let fixture = fixture_with_words(1, 4).await;
         fixture
             .scheduler
-            .tick(ts(100), &mut fixture.rng(), &fixture.running)
+            .tick(
+                timestamp(100),
+                &mut fixture.random_generator(),
+                &fixture.running,
+            )
             .await
             .unwrap();
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100_000), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100_000),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             0
@@ -157,12 +169,19 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             1
         );
-        assert_eq!(next_quiz_at(&fixture.storage, UserId(100)).await, ts(0));
+        assert_eq!(
+            next_quiz_at(&fixture.storage, UserId(100)).await,
+            timestamp(0)
+        );
     }
 
     #[tokio::test]
@@ -171,7 +190,11 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             0
@@ -180,7 +203,11 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(130), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(130),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             1
@@ -196,7 +223,11 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             0
@@ -210,7 +241,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            fixture.storage.due_users(ts(100)).await.unwrap(),
+            fixture.storage.due_users(timestamp(100)).await.unwrap(),
             [UserId(1)]
         );
     }
@@ -221,7 +252,11 @@ mod tests {
         fixture.sender.fail(UserId(1), SendError::Blocked);
         fixture
             .scheduler
-            .tick(ts(100), &mut fixture.rng(), &fixture.running)
+            .tick(
+                timestamp(100),
+                &mut fixture.random_generator(),
+                &fixture.running,
+            )
             .await
             .unwrap();
         assert!(
@@ -242,7 +277,11 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &fixture.running)
+                .tick(
+                    timestamp(100),
+                    &mut fixture.random_generator(),
+                    &fixture.running
+                )
                 .await
                 .unwrap(),
             1
@@ -257,7 +296,7 @@ mod tests {
         assert_eq!(
             fixture
                 .scheduler
-                .tick(ts(100), &mut fixture.rng(), &stopped)
+                .tick(timestamp(100), &mut fixture.random_generator(), &stopped)
                 .await
                 .unwrap(),
             1
@@ -274,7 +313,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            fixture.storage.due_users(ts(100)).await.unwrap(),
+            fixture.storage.due_users(timestamp(100)).await.unwrap(),
             [UserId(2)]
         );
     }

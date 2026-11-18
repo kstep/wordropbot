@@ -517,10 +517,10 @@ impl Handlers {
     }
 
     async fn quiz(&self, user: UserId) -> Reply {
-        let mut rng = StdRng::from_os_rng();
+        let mut random_generator = StdRng::from_os_rng();
         match self
             .service
-            .request_quiz(user, Timestamp::now(), &mut rng)
+            .request_quiz(user, Timestamp::now(), &mut random_generator)
             .await?
         {
             DispatchOutcome::Sent | DispatchOutcome::Blocked => Ok(()),

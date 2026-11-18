@@ -23,15 +23,15 @@ use crate::{
 pub const FAKE_MESSAGE_ID: MessageId = MessageId(777);
 const FIXTURE_CODE: &str = "K7QM-3XPA";
 
-pub fn ts(seconds: i64) -> Timestamp {
+pub fn timestamp(seconds: i64) -> Timestamp {
     Timestamp::from_secs(seconds)
 }
 
-pub fn uid(id: i64) -> UserId {
+pub fn user_id(id: i64) -> UserId {
     UserId(id)
 }
 
-pub fn mid(id: i32) -> MessageId {
+pub fn message_id(id: i32) -> MessageId {
     MessageId(id)
 }
 
@@ -49,7 +49,7 @@ pub fn minute_period() -> Period {
 /// Creates the user with a one-minute period, due from time zero.
 pub async fn add_user(storage: &Storage, user: UserId) {
     storage
-        .ensure_user(user, minute_period(), ts(0))
+        .ensure_user(user, minute_period(), timestamp(0))
         .await
         .unwrap();
 }
@@ -58,7 +58,7 @@ pub async fn add_user(storage: &Storage, user: UserId) {
 pub async fn user_with_collection(storage: &Storage, user: UserId, code: &str) -> CollectionId {
     add_user(storage, user).await;
     storage
-        .create_collection(user, "A", &code.parse().unwrap(), ts(0))
+        .create_collection(user, "A", &code.parse().unwrap(), timestamp(0))
         .await
         .unwrap()
         .unwrap()
@@ -73,7 +73,7 @@ pub async fn next_quiz_at(storage: &Storage, user: UserId) -> Timestamp {
 struct FakeState {
     sent: Vec<(UserId, String)>,
     cleared: Vec<(UserId, MessageId)>,
-    /// Signalled after each successful send, to stop in mid-walk.
+    /// Signalled after each successful send, to stop in message_id-walk.
     stop_after_send: Option<watch::Sender<bool>>,
     failures: HashMap<UserId, SendError>,
     /// Skips the user's quiz in the middle of the next send.
@@ -127,7 +127,7 @@ impl QuizSender for FakeSender {
         let cancel = state.cancel_during_send.take();
         async move {
             if let Some(storage) = cancel {
-                storage.skip_quiz(user, ts(0)).await.unwrap();
+                storage.skip_quiz(user, timestamp(0)).await.unwrap();
             }
             result
         }
@@ -154,7 +154,7 @@ impl QuizFixture {
         for id in 2..=users {
             add_user(&storage, UserId(id)).await;
             storage
-                .join_collection(UserId(id), &code, ts(0))
+                .join_collection(UserId(id), &code, timestamp(0))
                 .await
                 .unwrap();
         }
@@ -175,7 +175,7 @@ impl QuizFixture {
         )
     }
 
-    pub fn rng(&self) -> StdRng {
+    pub fn random_generator(&self) -> StdRng {
         StdRng::seed_from_u64(1)
     }
 

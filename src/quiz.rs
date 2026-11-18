@@ -20,12 +20,12 @@ impl QuizOptions {
         own: &[String],
         pool: impl IntoIterator<Item = &'a String>,
         count: usize,
-        rng: &mut R,
+        random_generator: &mut R,
     ) -> Option<QuizOptions> {
         if count < 2 {
             return None;
         }
-        let correct = own.choose(rng)?;
+        let correct = own.choose(random_generator)?;
         // Excludes every translation of the word, not only the chosen one, so a
         // synonym never shows up as a wrong answer.
         let mut seen: HashSet<Normalized> =
@@ -38,11 +38,11 @@ impl QuizOptions {
             return None;
         }
         let mut options: Vec<(&String, bool)> = distractors
-            .choose_multiple(rng, count - 1)
+            .choose_multiple(random_generator, count - 1)
             .map(|distractor| (*distractor, false))
             .collect();
         options.push((correct, true));
-        options.shuffle(rng);
+        options.shuffle(random_generator);
         let correct_index = options.iter().position(|&(_, is_correct)| is_correct)?;
         Some(QuizOptions {
             options: options
@@ -74,10 +74,15 @@ mod tests {
 
     #[test]
     fn builds_requested_count_with_one_correct() {
-        let mut rng = StdRng::seed_from_u64(1);
+        let mut random_generator = StdRng::seed_from_u64(1);
         let own = strings(&["бежать", "управлять"]);
-        let quiz =
-            QuizOptions::new(&own, &strings(&["стол", "груша", "окно"]), 3, &mut rng).unwrap();
+        let quiz = QuizOptions::new(
+            &own,
+            &strings(&["стол", "груша", "окно"]),
+            3,
+            &mut random_generator,
+        )
+        .unwrap();
         assert_eq!(quiz.options().len(), 3);
         assert!(own.contains(&quiz.options()[quiz.correct_index()]));
         let correct = quiz
@@ -90,12 +95,12 @@ mod tests {
 
     #[test]
     fn excludes_synonyms_by_normalized_form() {
-        let mut rng = StdRng::seed_from_u64(1);
+        let mut random_generator = StdRng::seed_from_u64(1);
         let quiz = QuizOptions::new(
             &strings(&["дом"]),
             &strings(&["ДОМ", " дом ", "стол", "окно"]),
             3,
-            &mut rng,
+            &mut random_generator,
         )
         .unwrap();
         assert_eq!(
@@ -109,7 +114,7 @@ mod tests {
 
     #[test]
     fn none_without_enough_distinct_distractors() {
-        let mut rng = StdRng::seed_from_u64(1);
+        let mut random_generator = StdRng::seed_from_u64(1);
         let cases: [(&[&str], &[&str]); 3] = [
             (&["дом"], &["стол", "Стол"]),
             (&["дом"], &["стол"]),
@@ -117,7 +122,7 @@ mod tests {
         ];
         for (own, pool) in cases {
             assert!(
-                QuizOptions::new(&strings(own), &strings(pool), 3, &mut rng).is_none(),
+                QuizOptions::new(&strings(own), &strings(pool), 3, &mut random_generator).is_none(),
                 "{own:?} {pool:?}"
             );
         }

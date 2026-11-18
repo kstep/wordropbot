@@ -23,13 +23,13 @@ pub enum ParseCodeError {
 impl Code {
     /// Needs a CSPRNG because the code is the only credential for joining a
     /// collection.
-    pub fn generate<R: CryptoRng + Rng + ?Sized>(rng: &mut R) -> Code {
+    pub fn generate<R: CryptoRng + Rng + ?Sized>(random_generator: &mut R) -> Code {
         let mut code = String::with_capacity(2 * HALF + 1);
-        for i in 0..2 * HALF {
-            if i == HALF {
+        for index in 0..2 * HALF {
+            if index == HALF {
                 code.push('-');
             }
-            code.push(ALPHABET[rng.random_range(0..ALPHABET.len())] as char);
+            code.push(ALPHABET[random_generator.random_range(0..ALPHABET.len())] as char);
         }
         Code(code)
     }
@@ -84,8 +84,8 @@ mod tests {
 
     #[test]
     fn generated_code_has_canonical_format() {
-        let mut rng = StdRng::seed_from_u64(1);
-        let code = Code::generate(&mut rng);
+        let mut random_generator = StdRng::seed_from_u64(1);
+        let code = Code::generate(&mut random_generator);
         assert_eq!(code.as_str().len(), 9);
         assert_eq!(&code.as_str()[4..5], "-");
         assert!(

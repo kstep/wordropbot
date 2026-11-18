@@ -71,24 +71,24 @@ impl JoinLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::ts;
+    use crate::testing::timestamp;
 
     #[test]
     fn blocks_after_limit_and_recovers() {
         let mut limiter = JoinLimiter::new(2);
-        limiter.record_failure(UserId(1), ts(0));
-        assert!(limiter.allow(UserId(1), ts(1)));
-        limiter.record_failure(UserId(1), ts(1));
-        assert!(!limiter.allow(UserId(1), ts(2)));
-        assert!(limiter.allow(UserId(2), ts(2)));
-        assert!(limiter.allow(UserId(1), ts(61)));
+        limiter.record_failure(UserId(1), timestamp(0));
+        assert!(limiter.allow(UserId(1), timestamp(1)));
+        limiter.record_failure(UserId(1), timestamp(1));
+        assert!(!limiter.allow(UserId(1), timestamp(2)));
+        assert!(limiter.allow(UserId(2), timestamp(2)));
+        assert!(limiter.allow(UserId(1), timestamp(61)));
     }
 
     #[test]
     fn drops_expired_entries() {
         let mut limiter = JoinLimiter::new(2);
-        limiter.record_failure(UserId(1), ts(0));
-        limiter.record_failure(UserId(2), ts(100));
+        limiter.record_failure(UserId(1), timestamp(0));
+        limiter.record_failure(UserId(2), timestamp(100));
         assert_eq!(limiter.failures.len(), 1);
     }
 }

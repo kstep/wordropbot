@@ -170,28 +170,31 @@ mod tests {
     async fn new_user_is_due_immediately() {
         let storage = Storage::in_memory().await;
         let user = storage
-            .ensure_user(uid(1), period(86400), ts(100))
+            .ensure_user(user_id(1), period(86400), timestamp(100))
             .await
             .unwrap();
-        assert_eq!(user.next_quiz_at, ts(100));
-        assert_eq!(storage.due_users(ts(100)).await.unwrap(), [uid(1)]);
-        assert!(storage.due_users(ts(99)).await.unwrap().is_empty());
+        assert_eq!(user.next_quiz_at, timestamp(100));
+        assert_eq!(
+            storage.due_users(timestamp(100)).await.unwrap(),
+            [user_id(1)]
+        );
+        assert!(storage.due_users(timestamp(99)).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn ensure_user_keeps_existing_settings() {
         let storage = Storage::in_memory().await;
         storage
-            .ensure_user(uid(1), period(86400), ts(100))
+            .ensure_user(user_id(1), period(86400), timestamp(100))
             .await
             .unwrap();
         storage
-            .set_period(uid(1), period(60), ts(200))
+            .set_period(user_id(1), period(60), timestamp(200))
             .await
             .unwrap();
         assert_eq!(
             storage
-                .ensure_user(uid(1), period(86400), ts(300))
+                .ensure_user(user_id(1), period(86400), timestamp(300))
                 .await
                 .unwrap()
                 .period,
@@ -203,50 +206,61 @@ mod tests {
     async fn period_and_resume_reschedule() {
         let storage = Storage::in_memory().await;
         storage
-            .ensure_user(uid(1), period(86400), ts(0))
+            .ensure_user(user_id(1), period(86400), timestamp(0))
             .await
             .unwrap();
         assert!(
             !storage
-                .set_period(uid(1), period(60), ts(100))
+                .set_period(user_id(1), period(60), timestamp(100))
                 .await
                 .unwrap()
         );
-        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(160));
-        storage.set_paused(uid(1), true, ts(110)).await.unwrap();
-        assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
-        storage.set_paused(uid(1), false, ts(200)).await.unwrap();
-        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(260));
+        assert_eq!(next_quiz_at(&storage, user_id(1)).await, timestamp(160));
+        storage
+            .set_paused(user_id(1), true, timestamp(110))
+            .await
+            .unwrap();
+        assert!(storage.due_users(timestamp(1000)).await.unwrap().is_empty());
+        storage
+            .set_paused(user_id(1), false, timestamp(200))
+            .await
+            .unwrap();
+        assert_eq!(next_quiz_at(&storage, user_id(1)).await, timestamp(260));
     }
 
     #[tokio::test]
     async fn resuming_unknown_user_is_noop() {
         let storage = Storage::in_memory().await;
-        assert!(!storage.set_paused(uid(9), false, ts(0)).await.unwrap());
-        assert!(storage.get_user(uid(9)).await.unwrap().is_none());
+        assert!(
+            !storage
+                .set_paused(user_id(9), false, timestamp(0))
+                .await
+                .unwrap()
+        );
+        assert!(storage.get_user(user_id(9)).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn open_quiz_blocks_reschedule_and_due() {
         let storage = Storage::in_memory().await;
-        let collection = user_with_collection(&storage, uid(1), "K7QM-3XPA").await;
+        let collection = user_with_collection(&storage, user_id(1), "K7QM-3XPA").await;
         storage
             .import_pairs(collection, &[pair("a", "б")])
             .await
             .unwrap();
         let word = storage.find_word(collection, "a").await.unwrap().unwrap();
         storage
-            .create_quiz(uid(1), word.id, &["б".into()], 0, ts(0))
+            .create_quiz(user_id(1), word.id, &["б".into()], 0, timestamp(0))
             .await
             .unwrap()
             .unwrap();
-        assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
+        assert!(storage.due_users(timestamp(1000)).await.unwrap().is_empty());
         assert!(
             storage
-                .set_period(uid(1), period(30), ts(500))
+                .set_period(user_id(1), period(30), timestamp(500))
                 .await
                 .unwrap()
         );
-        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(0));
+        assert_eq!(next_quiz_at(&storage, user_id(1)).await, timestamp(0));
     }
 }

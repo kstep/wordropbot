@@ -11,8 +11,8 @@ use crate::period::Period;
 pub struct Timestamp(i64);
 
 impl Timestamp {
-    pub const fn from_secs(secs: i64) -> Timestamp {
-        Timestamp(secs)
+    pub const fn from_secs(seconds: i64) -> Timestamp {
+        Timestamp(seconds)
     }
 
     pub const fn as_secs(self) -> i64 {
@@ -20,12 +20,12 @@ impl Timestamp {
     }
 
     pub fn now() -> Timestamp {
-        let secs = SystemTime::now()
+        let seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since_epoch| {
                 i64::try_from(since_epoch.as_secs()).unwrap_or(i64::MAX)
             });
-        Timestamp(secs)
+        Timestamp(seconds)
     }
 
     /// Seconds from `earlier` to `self`, zero when `earlier` is in the future.

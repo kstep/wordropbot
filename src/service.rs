@@ -77,7 +77,7 @@ impl ChosenQuiz {
         candidates: &[Candidate],
         config: &Config,
         now: Timestamp,
-        rng: &mut R,
+        random_generator: &mut R,
     ) -> Option<ChosenQuiz> {
         // Distractors come from the word's own collection.
         let mut pools: HashMap<CollectionId, TranslationPool> = HashMap::new();
@@ -102,12 +102,12 @@ impl ChosenQuiz {
                 }
             })
             .collect();
-        let candidate = &candidates[weights.pick(rng)?];
+        let candidate = &candidates[weights.pick(random_generator)?];
         let options = QuizOptions::new(
             &candidate.translations,
             pools[&candidate.collection_id].translations.iter().copied(),
             config.quiz.options,
-            rng,
+            random_generator,
         )?;
         Some(ChosenQuiz {
             word_id: candidate.word_id,
@@ -159,8 +159,11 @@ impl<S: QuizSender> QuizService<S> {
         user: UserId,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
-        let mut rng = StdRng::from_os_rng();
-        Ok(self.choose_quiz(user, now, &mut rng).await?.is_some())
+        let mut random_generator = StdRng::from_os_rng();
+        Ok(self
+            .choose_quiz(user, now, &mut random_generator)
+            .await?
+            .is_some())
     }
 
     /// Scheduler path of `dispatch`: pause and schedule are checked again
@@ -170,10 +173,12 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         now: Timestamp,
-        rng: &mut StdRng,
+        random_generator: &mut StdRng,
     ) -> Result<Option<DispatchOutcome>, sqlx::Error> {
         match self.storage.get_user(user).await? {
-            Some(row) if row.is_due(now) => self.dispatch(user, now, rng).await.map(Some),
+            Some(row) if row.is_due(now) => {
+                self.dispatch(user, now, random_generator).await.map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -184,10 +189,10 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         now: Timestamp,
-        rng: &mut StdRng,
+        random_generator: &mut StdRng,
     ) -> Result<DispatchOutcome, sqlx::Error> {
         let Some(open) = self.storage.open_quiz(user).await? else {
-            return self.dispatch(user, now, rng).await;
+            return self.dispatch(user, now, random_generator).await;
         };
         match self
             .sender
@@ -211,12 +216,12 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         now: Timestamp,
-        rng: &mut StdRng,
+        random_generator: &mut StdRng,
     ) -> Result<DispatchOutcome, sqlx::Error> {
         if self.storage.open_quiz(user).await?.is_some() {
             return Ok(DispatchOutcome::AlreadyOpen);
         }
-        let Some(chosen) = self.choose_quiz(user, now, rng).await? else {
+        let Some(chosen) = self.choose_quiz(user, now, random_generator).await? else {
             return Ok(DispatchOutcome::NoEligibleWords);
         };
         let Some(quiz_id) = self
@@ -268,7 +273,7 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         now: Timestamp,
-        rng: &mut StdRng,
+        random_generator: &mut StdRng,
     ) -> Result<Option<ChosenQuiz>, sqlx::Error> {
         let options = self.config.quiz.options;
         if !self
@@ -279,7 +284,12 @@ impl<S: QuizSender> QuizService<S> {
             return Ok(None);
         }
         let candidates = self.storage.candidates(user).await?;
-        Ok(ChosenQuiz::choose(&candidates, &self.config, now, rng))
+        Ok(ChosenQuiz::choose(
+            &candidates,
+            &self.config,
+            now,
+            random_generator,
+        ))
     }
 
     async fn handle_send_error(
@@ -318,7 +328,7 @@ mod tests {
         config::QuizConfig,
         import::ParsedPair,
         period::Period,
-        testing::{FAKE_MESSAGE_ID, QuizFixture, ts},
+        testing::{FAKE_MESSAGE_ID, QuizFixture, timestamp},
     };
 
     pub fn candidate(word_id: i64, collection_id: i64, term: &str, translation: &str) -> Candidate {
@@ -376,7 +386,12 @@ mod tests {
     fn ineligible_words_cost_no_retries() {
         let candidates: Vec<Candidate> = (0..2000).map(candidate_without_distractors).collect();
         let mut generator = CountingGenerator::new();
-        let chosen = ChosenQuiz::choose(&candidates, &Config::for_tests(), ts(0), &mut generator);
+        let chosen = ChosenQuiz::choose(
+            &candidates,
+            &Config::for_tests(),
+            timestamp(0),
+            &mut generator,
+        );
         assert!(chosen.is_none());
         assert_eq!(generator.draws, 0);
     }
@@ -391,9 +406,13 @@ mod tests {
         };
         let draws_for = |candidates: &[Candidate]| {
             let mut generator = CountingGenerator::new();
-            let chosen =
-                ChosenQuiz::choose(candidates, &Config::for_tests(), ts(0), &mut generator)
-                    .unwrap();
+            let chosen = ChosenQuiz::choose(
+                candidates,
+                &Config::for_tests(),
+                timestamp(0),
+                &mut generator,
+            )
+            .unwrap();
             assert_eq!(chosen.term, "fits");
             generator.draws
         };
@@ -408,13 +427,15 @@ mod tests {
             candidate(3, 20, "c", "cc"),
             candidate(4, 20, "d", "dd"),
         ];
-        let mut rng = StdRng::seed_from_u64(1);
+        let mut random_generator = StdRng::seed_from_u64(1);
         let config = Config {
             quiz: QuizConfig { options: 2 },
             ..Config::for_tests()
         };
         for _ in 0..50 {
-            let quiz = ChosenQuiz::choose(&candidates, &config, ts(0), &mut rng).unwrap();
+            let quiz =
+                ChosenQuiz::choose(&candidates, &config, timestamp(0), &mut random_generator)
+                    .unwrap();
             let allowed: &[&str] = if quiz.word_id.0 <= 2 {
                 &["aa", "bb"]
             } else {
@@ -432,8 +453,16 @@ mod tests {
     #[test]
     fn word_without_enough_distractors_is_skipped() {
         let candidates = [candidate(1, 10, "a", "aa"), candidate(2, 20, "b", "bb")];
-        let mut rng = StdRng::seed_from_u64(1);
-        assert!(ChosenQuiz::choose(&candidates, &Config::for_tests(), ts(0), &mut rng).is_none());
+        let mut random_generator = StdRng::seed_from_u64(1);
+        assert!(
+            ChosenQuiz::choose(
+                &candidates,
+                &Config::for_tests(),
+                timestamp(0),
+                &mut random_generator
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -445,10 +474,15 @@ mod tests {
             candidate(3, 10, "c", "cc"),
             candidate(9, 20, "z", "zz"),
         ];
-        let mut rng = StdRng::seed_from_u64(3);
+        let mut random_generator = StdRng::seed_from_u64(3);
         for _ in 0..50 {
-            let quiz =
-                ChosenQuiz::choose(&candidates, &Config::for_tests(), ts(0), &mut rng).unwrap();
+            let quiz = ChosenQuiz::choose(
+                &candidates,
+                &Config::for_tests(),
+                timestamp(0),
+                &mut random_generator,
+            )
+            .unwrap();
             assert_ne!(quiz.word_id, WordId(9));
         }
     }
@@ -460,19 +494,19 @@ mod tests {
             if paused {
                 fixture
                     .storage
-                    .set_paused(UserId(1), true, ts(50))
+                    .set_paused(UserId(1), true, timestamp(50))
                     .await
                     .unwrap();
             } else {
                 fixture
                     .storage
-                    .set_period(UserId(1), Period::from_secs(600).unwrap(), ts(50))
+                    .set_period(UserId(1), Period::from_secs(600).unwrap(), timestamp(50))
                     .await
                     .unwrap();
             }
             let outcome = fixture
                 .service()
-                .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
+                .dispatch_due(UserId(1), timestamp(100), &mut fixture.random_generator())
                 .await
                 .unwrap();
             assert_eq!(outcome, None, "paused: {paused}");
@@ -488,7 +522,7 @@ mod tests {
             .fail(UserId(1), SendError::Rejected("message is too long".into()));
         fixture
             .service()
-            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .dispatch(UserId(1), timestamp(100), &mut fixture.random_generator())
             .await
             .unwrap();
         assert!(
@@ -499,9 +533,16 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(fixture.storage.due_users(ts(159)).await.unwrap().is_empty());
+        assert!(
+            fixture
+                .storage
+                .due_users(timestamp(159))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
-            fixture.storage.due_users(ts(160)).await.unwrap(),
+            fixture.storage.due_users(timestamp(160)).await.unwrap(),
             [UserId(1)]
         );
     }
@@ -512,7 +553,7 @@ mod tests {
         fixture.sender.cancel_during_send(fixture.storage.clone());
         fixture
             .service()
-            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .dispatch(UserId(1), timestamp(100), &mut fixture.random_generator())
             .await
             .unwrap();
         assert_eq!(fixture.sender.cleared(), [(UserId(1), FAKE_MESSAGE_ID)]);
@@ -523,12 +564,12 @@ mod tests {
         let fixture = QuizFixture::with_words(1, 4).await;
         fixture
             .storage
-            .set_paused(UserId(1), true, ts(50))
+            .set_paused(UserId(1), true, timestamp(50))
             .await
             .unwrap();
         let outcome = fixture
             .service()
-            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .dispatch(UserId(1), timestamp(100), &mut fixture.random_generator())
             .await
             .unwrap();
         assert_eq!(outcome, DispatchOutcome::Sent);
@@ -551,13 +592,13 @@ mod tests {
         let service = fixture.service();
         assert!(
             !service
-                .has_eligible_words(UserId(1), ts(100))
+                .has_eligible_words(UserId(1), timestamp(100))
                 .await
                 .unwrap()
         );
         assert_eq!(
             service
-                .dispatch(UserId(1), ts(100), &mut fixture.rng())
+                .dispatch(UserId(1), timestamp(100), &mut fixture.random_generator())
                 .await
                 .unwrap(),
             DispatchOutcome::NoEligibleWords
@@ -592,7 +633,7 @@ mod tests {
         assert!(
             !fixture
                 .service()
-                .has_eligible_words(UserId(1), ts(100))
+                .has_eligible_words(UserId(1), timestamp(100))
                 .await
                 .unwrap()
         );
@@ -603,13 +644,13 @@ mod tests {
         let fixture = QuizFixture::with_words(1, 4).await;
         let service = fixture.service();
         let first = service
-            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .request_quiz(UserId(1), timestamp(100), &mut fixture.random_generator())
             .await
             .unwrap();
         assert_eq!(first, DispatchOutcome::Sent);
         assert!(fixture.sender.cleared().is_empty());
         let second = service
-            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .request_quiz(UserId(1), timestamp(101), &mut fixture.random_generator())
             .await
             .unwrap();
         assert_eq!(second, DispatchOutcome::Sent);
@@ -624,12 +665,12 @@ mod tests {
         let fixture = QuizFixture::with_words(1, 4).await;
         let service = fixture.service();
         service
-            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .request_quiz(UserId(1), timestamp(100), &mut fixture.random_generator())
             .await
             .unwrap();
         fixture.sender.fail(UserId(1), SendError::Blocked);
         let outcome = service
-            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .request_quiz(UserId(1), timestamp(101), &mut fixture.random_generator())
             .await
             .unwrap();
         assert_eq!(outcome, DispatchOutcome::Blocked);

@@ -445,17 +445,23 @@ mod tests {
     async fn fixture() -> Fixture {
         let storage = Storage::in_memory().await;
         let period = Period::from_secs(PERIOD as u64).unwrap();
-        storage.ensure_user(uid(1), period, ts(0)).await.unwrap();
-        storage.ensure_user(uid(2), period, ts(0)).await.unwrap();
+        storage
+            .ensure_user(user_id(1), period, timestamp(0))
+            .await
+            .unwrap();
+        storage
+            .ensure_user(user_id(2), period, timestamp(0))
+            .await
+            .unwrap();
         let code: Code = "K7QM-3XPA".parse().unwrap();
         let collection = storage
-            .create_collection(uid(1), "A", &code, ts(0))
+            .create_collection(user_id(1), "A", &code, timestamp(0))
             .await
             .unwrap()
             .unwrap()
             .id;
         storage
-            .join_collection(uid(2), &code, ts(0))
+            .join_collection(user_id(2), &code, timestamp(0))
             .await
             .unwrap()
             .unwrap();
@@ -488,7 +494,7 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+                .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
                 .await
                 .unwrap()
                 .is_some()
@@ -496,7 +502,7 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(11))
+                .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(11))
                 .await
                 .unwrap()
                 .is_none()
@@ -508,14 +514,14 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), 0, ts(100))
+                .answer_quiz(quiz, user_id(1), 0, timestamp(100))
                 .await
                 .unwrap(),
             AnswerOutcome::Answered {
@@ -526,16 +532,16 @@ mod tests {
         assert!(matches!(
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), 1, ts(101))
+                .answer_quiz(quiz, user_id(1), 1, timestamp(101))
                 .await
                 .unwrap(),
             AnswerOutcome::Closed
         ));
         assert_eq!(
-            next_quiz_at(&fixture.storage, uid(1)).await,
-            ts(100 + PERIOD)
+            next_quiz_at(&fixture.storage, user_id(1)).await,
+            timestamp(100 + PERIOD)
         );
-        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
+        let candidates = fixture.storage.candidates(user_id(1)).await.unwrap();
         assert_eq!(
             candidates
                 .iter()
@@ -552,17 +558,17 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .answer_quiz(quiz, uid(1), 0, ts(20))
+            .answer_quiz(quiz, user_id(1), 0, timestamp(20))
             .await
             .unwrap();
         fixture.storage.delete_quiz(quiz).await.unwrap();
-        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
+        let candidates = fixture.storage.candidates(user_id(1)).await.unwrap();
         assert_eq!(candidates[0].answers.len(), 1);
     }
 
@@ -571,7 +577,7 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
@@ -583,7 +589,7 @@ mod tests {
         assert!(matches!(
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), 1, ts(20))
+                .answer_quiz(quiz, user_id(1), 1, timestamp(20))
                 .await
                 .unwrap(),
             AnswerOutcome::Answered {
@@ -598,14 +604,14 @@ mod tests {
         let fixture = fixture().await;
         fixture
             .storage
-            .leave_collection(uid(2), fixture.collection, ts(5))
+            .leave_collection(user_id(2), fixture.collection, timestamp(5))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             fixture
                 .storage
-                .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+                .create_quiz(user_id(2), fixture.word, &fixture.options, 0, timestamp(10))
                 .await
                 .unwrap(),
             None
@@ -617,7 +623,7 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
@@ -628,7 +634,7 @@ mod tests {
             chosen,
         } = fixture
             .storage
-            .answer_quiz(quiz, uid(1), 1, ts(100))
+            .answer_quiz(quiz, user_id(1), 1, timestamp(100))
             .await
             .unwrap()
         else {
@@ -645,19 +651,26 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(
             fixture
                 .storage
-                .answer_quiz(quiz, uid(2), 0, ts(100))
+                .answer_quiz(quiz, user_id(2), 0, timestamp(100))
                 .await
                 .unwrap(),
             AnswerOutcome::Closed
         ));
-        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -665,20 +678,30 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), 99, ts(100))
+                .answer_quiz(quiz, user_id(1), 99, timestamp(100))
                 .await
                 .unwrap(),
             AnswerOutcome::Closed
         ));
-        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
-        assert_eq!(next_quiz_at(&fixture.storage, uid(1)).await, ts(0));
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            next_quiz_at(&fixture.storage, user_id(1)).await,
+            timestamp(0)
+        );
     }
 
     #[tokio::test]
@@ -688,22 +711,25 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .skip_quiz(uid(1), ts(50))
+                .skip_quiz(user_id(1), timestamp(50))
                 .await
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(next_quiz_at(&fixture.storage, uid(1)).await, ts(0));
+        assert_eq!(
+            next_quiz_at(&fixture.storage, user_id(1)).await,
+            timestamp(0)
+        );
         fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         assert!(
             fixture
                 .storage
-                .skip_quiz(uid(1), ts(100))
+                .skip_quiz(user_id(1), timestamp(100))
                 .await
                 .unwrap()
                 .is_some()
@@ -711,19 +737,19 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .skip_quiz(uid(1), ts(100))
+                .skip_quiz(user_id(1), timestamp(100))
                 .await
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            next_quiz_at(&fixture.storage, uid(1)).await,
-            ts(100 + PERIOD)
+            next_quiz_at(&fixture.storage, user_id(1)).await,
+            timestamp(100 + PERIOD)
         );
         assert!(
             fixture
                 .storage
-                .candidates(uid(1))
+                .candidates(user_id(1))
                 .await
                 .unwrap()
                 .iter()
@@ -736,36 +762,50 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(2), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .answer_quiz(quiz, uid(2), 0, ts(20))
+            .answer_quiz(quiz, user_id(2), 0, timestamp(20))
             .await
             .unwrap();
         fixture
             .storage
-            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(30))
+            .create_quiz(user_id(2), fixture.word, &fixture.options, 0, timestamp(30))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .leave_collection(uid(2), fixture.collection, ts(40))
+            .leave_collection(user_id(2), fixture.collection, timestamp(40))
             .await
             .unwrap()
             .unwrap();
-        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
-        assert!(fixture.storage.candidates(uid(2)).await.unwrap().is_empty());
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fixture
+                .storage
+                .candidates(user_id(2))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         fixture
             .storage
-            .join_collection(uid(2), &fixture.code, ts(50))
+            .join_collection(user_id(2), &fixture.code, timestamp(50))
             .await
             .unwrap()
             .unwrap();
-        let candidates = fixture.storage.candidates(uid(2)).await.unwrap();
+        let candidates = fixture.storage.candidates(user_id(2)).await.unwrap();
         assert_eq!(
             candidates
                 .iter()
@@ -782,24 +822,38 @@ mod tests {
         let fixture = fixture().await;
         let sent = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .set_quiz_message(sent, mid(77))
+            .set_quiz_message(sent, message_id(77))
             .await
             .unwrap();
         fixture
             .storage
-            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(2), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(fixture.storage.delete_unsent_quizzes().await.unwrap(), 1);
-        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
-        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -807,22 +861,34 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), fixture.word, &fixture.options, 2, ts(10))
+            .create_quiz(user_id(1), fixture.word, &fixture.options, 2, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .set_quiz_message(quiz, mid(5))
+            .set_quiz_message(quiz, message_id(5))
             .await
             .unwrap();
-        let open = fixture.storage.open_quiz(uid(1)).await.unwrap().unwrap();
+        let open = fixture
+            .storage
+            .open_quiz(user_id(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(open.id, quiz);
         assert_eq!(open.term, "run");
         assert_eq!(open.options, fixture.options);
-        assert_eq!(open.message_id, Some(mid(5)));
+        assert_eq!(open.message_id, Some(message_id(5)));
         fixture.storage.delete_quiz(quiz).await.unwrap();
-        assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_none());
+        assert!(
+            fixture
+                .storage
+                .open_quiz(user_id(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -837,7 +903,7 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(
-            fixture.storage.open_quiz(uid(1)).await,
+            fixture.storage.open_quiz(user_id(1)).await,
             Err(Error::ColumnDecode { .. })
         ));
     }
@@ -845,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn candidates_include_unanswered_words_with_ordered_translations() {
         let fixture = fixture().await;
-        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
+        let candidates = fixture.storage.candidates(user_id(1)).await.unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].collection_id, fixture.collection);
         assert_eq!(candidates[0].term, "run");
@@ -858,22 +924,22 @@ mod tests {
         let fixture = fixture().await;
         let quiz = fixture
             .storage
-            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+            .create_quiz(user_id(2), fixture.word, &fixture.options, 0, timestamp(10))
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .answer_quiz(quiz, uid(2), 0, ts(20))
+            .answer_quiz(quiz, user_id(2), 0, timestamp(20))
             .await
             .unwrap();
         assert!(
-            fixture.storage.candidates(uid(1)).await.unwrap()[0]
+            fixture.storage.candidates(user_id(1)).await.unwrap()[0]
                 .answers
                 .is_empty()
         );
         assert_eq!(
-            fixture.storage.candidates(uid(2)).await.unwrap()[0]
+            fixture.storage.candidates(user_id(2)).await.unwrap()[0]
                 .answers
                 .len(),
             1
@@ -891,7 +957,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut now = ts(1000);
+        let mut now = timestamp(1000);
         for (term, choice) in [("run", 1), ("a", 1), ("b", 1)] {
             let word = fixture
                 .storage
@@ -902,16 +968,16 @@ mod tests {
                 .id;
             let quiz = fixture
                 .storage
-                .create_quiz(uid(1), word, &fixture.options, 0, now)
+                .create_quiz(user_id(1), word, &fixture.options, 0, now)
                 .await
                 .unwrap()
                 .unwrap();
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), choice, now)
+                .answer_quiz(quiz, user_id(1), choice, now)
                 .await
                 .unwrap();
-            now = ts(now.as_secs() + 1);
+            now = timestamp(now.as_secs() + 1);
         }
         let word = fixture
             .storage
@@ -922,18 +988,23 @@ mod tests {
             .id;
         let quiz = fixture
             .storage
-            .create_quiz(uid(1), word, &fixture.options, 0, now)
+            .create_quiz(user_id(1), word, &fixture.options, 0, now)
             .await
             .unwrap()
             .unwrap();
         fixture
             .storage
-            .answer_quiz(quiz, uid(1), 0, now)
+            .answer_quiz(quiz, user_id(1), 0, now)
             .await
             .unwrap();
         let stats = fixture
             .storage
-            .collection_stats(uid(1), fixture.collection, now, &SelectionConfig::default())
+            .collection_stats(
+                user_id(1),
+                fixture.collection,
+                now,
+                &SelectionConfig::default(),
+            )
             .await
             .unwrap();
         assert_eq!(stats.word_count, 4);
@@ -975,22 +1046,22 @@ mod tests {
                 .id;
             let quiz = fixture
                 .storage
-                .create_quiz(uid(1), word, &fixture.options, 0, ts(5))
+                .create_quiz(user_id(1), word, &fixture.options, 0, timestamp(5))
                 .await
                 .unwrap()
                 .unwrap();
             fixture
                 .storage
-                .answer_quiz(quiz, uid(1), 1, ts(5))
+                .answer_quiz(quiz, user_id(1), 1, timestamp(5))
                 .await
                 .unwrap();
         }
         let stats = fixture
             .storage
             .collection_stats(
-                uid(1),
+                user_id(1),
                 fixture.collection,
-                ts(5),
+                timestamp(5),
                 &SelectionConfig::default(),
             )
             .await
@@ -1018,14 +1089,14 @@ mod tests {
         assert!(
             !fixture
                 .storage
-                .has_enough_distinct_translations(uid(1), 4)
+                .has_enough_distinct_translations(user_id(1), 4)
                 .await
                 .unwrap()
         );
         assert!(
             fixture
                 .storage
-                .has_enough_distinct_translations(uid(1), 3)
+                .has_enough_distinct_translations(user_id(1), 3)
                 .await
                 .unwrap()
         );
@@ -1036,7 +1107,7 @@ mod tests {
         let fixture = fixture().await;
         let other = fixture
             .storage
-            .create_collection(uid(1), "B", &"AAAA-BBBB".parse().unwrap(), ts(0))
+            .create_collection(user_id(1), "B", &"AAAA-BBBB".parse().unwrap(), timestamp(0))
             .await
             .unwrap()
             .unwrap()
@@ -1051,7 +1122,7 @@ mod tests {
         assert!(
             !fixture
                 .storage
-                .has_enough_distinct_translations(uid(1), 3)
+                .has_enough_distinct_translations(user_id(1), 3)
                 .await
                 .unwrap()
         );
@@ -1063,7 +1134,7 @@ mod tests {
         assert!(
             !fixture
                 .storage
-                .has_enough_distinct_translations(uid(3), 1)
+                .has_enough_distinct_translations(user_id(3), 1)
                 .await
                 .unwrap()
         );
