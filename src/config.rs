@@ -38,11 +38,13 @@ impl fmt::Debug for TelegramConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct DatabaseConfig {
     pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct SelectionConfig {
     pub half_life_days: f64,
     pub prior_error: f64,
@@ -51,11 +53,13 @@ pub struct SelectionConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct QuizConfig {
     pub options: usize,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct ScheduleConfig {
     pub default_period: Period,
     pub min_period: Period,
@@ -63,19 +67,70 @@ pub struct ScheduleConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct LimitsConfig {
     pub max_term_chars: usize,
     pub max_translation_chars: usize,
     pub join_attempts_per_minute: u32,
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        DatabaseConfig {
+            path: PathBuf::from("wordropbot.db"),
+        }
+    }
+}
+
+impl Default for SelectionConfig {
+    fn default() -> Self {
+        SelectionConfig {
+            half_life_days: 14.0,
+            prior_error: 0.5,
+            prior_strength: 1.0,
+            min_weight: 0.05,
+        }
+    }
+}
+
+impl Default for QuizConfig {
+    fn default() -> Self {
+        QuizConfig { options: 3 }
+    }
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        ScheduleConfig {
+            default_period: Period::from_secs(86_400).expect("1d is a valid period"),
+            min_period: Period::from_secs(60).expect("1m is a valid period"),
+            tick_seconds: 30,
+        }
+    }
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        LimitsConfig {
+            max_term_chars: 200,
+            max_translation_chars: 200,
+            join_attempts_per_minute: 5,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub telegram: TelegramConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
+    #[serde(default)]
     pub selection: SelectionConfig,
+    #[serde(default)]
     pub quiz: QuizConfig,
+    #[serde(default)]
     pub schedule: ScheduleConfig,
+    #[serde(default)]
     pub limits: LimitsConfig,
 }
 
@@ -212,9 +267,42 @@ join_attempts_per_minute = 5
         }
     }
 
+    const TOKEN_ONLY: &str = "[telegram]\ntoken = \"123:abc\"\n";
+
     #[test]
-    fn rejects_missing_required_key() {
-        assert!(Config::parse(&VALID.replace("[quiz]\noptions = 3", "[quiz]")).is_err());
+    fn token_only_config_uses_defaults() {
+        let c = Config::parse(TOKEN_ONLY).unwrap();
+        assert_eq!(c.database.path, Path::new("wordropbot.db"));
+        assert_eq!(c.selection.half_life_days, 14.0);
+        assert_eq!(c.selection.prior_error, 0.5);
+        assert_eq!(c.selection.prior_strength, 1.0);
+        assert_eq!(c.selection.min_weight, 0.05);
+        assert_eq!(c.quiz.options, 3);
+        assert_eq!(c.schedule.default_period.as_secs(), 86_400);
+        assert_eq!(c.schedule.min_period.as_secs(), 60);
+        assert_eq!(c.schedule.tick_seconds, 30);
+        assert_eq!(c.limits.max_term_chars, 200);
+        assert_eq!(c.limits.max_translation_chars, 200);
+        assert_eq!(c.limits.join_attempts_per_minute, 5);
+    }
+
+    #[test]
+    fn partial_section_keeps_other_defaults() {
+        let c = Config::parse(&format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")).unwrap();
+        assert_eq!(c.selection.min_weight, 0.1);
+        assert_eq!(c.selection.half_life_days, 14.0);
+    }
+
+    #[test]
+    fn missing_token_is_rejected() {
+        assert!(Config::parse("").is_err());
+        assert!(Config::parse("[quiz]\noptions = 4\n").is_err());
+    }
+
+    #[test]
+    fn defaults_are_still_validated() {
+        let text = format!("{TOKEN_ONLY}[schedule]\nmin_period = \"2d\"\n");
+        assert!(Config::parse(&text).is_err());
     }
 
     #[test]
