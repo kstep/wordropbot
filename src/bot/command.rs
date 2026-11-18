@@ -63,10 +63,10 @@ fn collection(arg: &str) -> Command {
         return Command::CollectionList;
     }
     match arg.split_once(char::is_whitespace) {
-        Some(("new", title)) if !title.trim().is_empty() => {
+        Some((word, title)) if word.eq_ignore_ascii_case("new") && !title.trim().is_empty() => {
             Command::CollectionNew(title.trim().to_owned())
         }
-        None if arg == "new" => Command::Unknown,
+        None if arg.eq_ignore_ascii_case("new") => Command::Unknown,
         _ => Command::CollectionJoin(arg.to_owned()),
     }
 }
@@ -90,6 +90,15 @@ mod tests {
             parse("/collection K7QM-3XPA"),
             Ok(Command::CollectionJoin("K7QM-3XPA".into()))
         );
+    }
+
+    #[test]
+    fn collection_new_is_case_insensitive() {
+        assert_eq!(
+            parse("/collection New Foo"),
+            Ok(Command::CollectionNew("Foo".into()))
+        );
+        assert_eq!(parse("/collection NEW"), Ok(Command::Unknown));
     }
 
     #[test]

@@ -34,6 +34,10 @@ impl<S: QuizSender> Scheduler<S> {
         let mut interval = tokio::time::interval(self.service.tick_interval());
         // A slow tick should not be followed by a burst of catch-up ticks.
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // `changed()` only reports later changes, so a shutdown sent before start needs this check.
+        if *shutdown.borrow() {
+            return;
+        }
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -245,5 +249,15 @@ mod tests {
             .await
             .expect("run did not stop")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_exits_when_already_shut_down() {
+        let f = fixture_with_words(1, 4).await;
+        let (_tx, rx) = watch::channel(true);
+        tokio::time::timeout(std::time::Duration::from_secs(5), f.scheduler.run(rx))
+            .await
+            .expect("run did not exit");
+        assert!(f.sender.sent().is_empty());
     }
 }
