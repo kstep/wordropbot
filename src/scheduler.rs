@@ -1,10 +1,13 @@
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use tokio::sync::watch;
-use tokio::time::{self, MissedTickBehavior};
+use rand::{SeedableRng, rngs::StdRng};
+use tokio::{
+    sync::watch,
+    time::{self, MissedTickBehavior},
+};
 
-use crate::service::{DispatchOutcome, QuizSender, QuizService};
-use crate::time::Timestamp;
+use crate::{
+    service::{DispatchOutcome, QuizSender, QuizService},
+    time::Timestamp,
+};
 
 pub struct Scheduler<S> {
     service: QuizService<S>,
@@ -15,7 +18,8 @@ impl<S: QuizSender> Scheduler<S> {
         Scheduler { service }
     }
 
-    /// Returns the number of quizzes sent; stops walking users once `shutdown` is true.
+    /// Returns the number of quizzes sent; stops walking users once `shutdown`
+    /// is true.
     pub async fn tick(
         &self,
         now: Timestamp,
@@ -43,7 +47,8 @@ impl<S: QuizSender> Scheduler<S> {
         let mut interval = time::interval(self.service.tick_interval());
         // A slow tick should not be followed by a burst of catch-up ticks.
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        // `changed()` only reports later changes, so a shutdown sent before start needs this check.
+        // `changed()` only reports later changes, so a shutdown sent before
+        // start needs this check.
         if *shutdown.borrow() {
             return;
         }
@@ -66,18 +71,23 @@ impl<S: QuizSender> Scheduler<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        future::{self, Future},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
     use super::*;
-    use crate::code::Code;
-    use crate::config::Config;
-    use crate::ids::{CollectionId, MessageId, QuizId, UserId};
-    use crate::import::ParsedPair;
-    use crate::period::Period;
-    use crate::service::SendError;
-    use crate::storage::Storage;
-    use std::collections::HashMap;
-    use std::future::{self, Future};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use crate::{
+        code::Code,
+        config::Config,
+        ids::{CollectionId, MessageId, QuizId, UserId},
+        import::ParsedPair,
+        period::Period,
+        service::SendError,
+        storage::Storage,
+    };
 
     const FAKE_MESSAGE_ID: MessageId = MessageId(777);
 

@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 
-use super::Storage;
-use super::collections::CancelledQuiz;
-use crate::ids::{CollectionId, MessageId, UserId, WordId};
-use crate::import::{Normalized, ParsedPair};
-use crate::time::Timestamp;
+use super::{Storage, collections::CancelledQuiz};
+use crate::{
+    ids::{CollectionId, MessageId, UserId, WordId},
+    import::{Normalized, ParsedPair},
+    time::Timestamp,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportSummary {
@@ -20,8 +21,9 @@ pub struct WordView {
 }
 
 impl Storage {
-    /// Merges the pairs into the collection in one transaction. A word counts as
-    /// `updated` only if it existed before this import and gained a translation.
+    /// Merges the pairs into the collection in one transaction. A word counts
+    /// as `updated` only if it existed before this import and gained a
+    /// translation.
     pub async fn import_pairs(
         &self,
         collection_id: CollectionId,
@@ -84,7 +86,8 @@ impl Storage {
             .await
     }
 
-    /// Words ordered by normalised term, so paging is stable across spelling case.
+    /// Words ordered by normalised term, so paging is stable across spelling
+    /// case.
     pub async fn list_words(
         &self,
         collection_id: CollectionId,
@@ -146,9 +149,9 @@ impl Storage {
         }))
     }
 
-    /// Deletes the word for all members. Returns `None` if the word does not exist or
-    /// the user is not a member of its collection. Owners of cancelled open quizzes
-    /// get their next quiz scheduled one period from `now`.
+    /// Deletes the word for all members. Returns `None` if the word does not
+    /// exist or the user is not a member of its collection. Owners of cancelled
+    /// open quizzes get their next quiz scheduled one period from `now`.
     pub async fn remove_word(
         &self,
         user_id: UserId,
@@ -195,11 +198,12 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use crate::ids::{CollectionId, MessageId};
-    use crate::import::ParsedPair;
-    use crate::period::Period;
-    use crate::storage::testing::*;
-    use crate::storage::{CancelledQuiz, Storage};
+    use crate::{
+        ids::{CollectionId, MessageId},
+        import::ParsedPair,
+        period::Period,
+        storage::{CancelledQuiz, Storage, testing::*},
+    };
 
     fn pair(term: &str, summary: &str) -> ParsedPair {
         ParsedPair {

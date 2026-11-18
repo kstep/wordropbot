@@ -1,16 +1,15 @@
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, sync::Arc, time::Duration};
 
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use crate::config::Config;
-use crate::ids::{MessageId, QuizId, UserId, WordId};
-use crate::quiz::QuizOptions;
-use crate::selection::Weights;
-use crate::storage::{Candidate, Storage};
-use crate::time::Timestamp;
+use crate::{
+    config::Config,
+    ids::{MessageId, QuizId, UserId, WordId},
+    quiz::QuizOptions,
+    selection::Weights,
+    storage::{Candidate, Storage},
+    time::Timestamp,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendError {
@@ -47,8 +46,9 @@ impl ChosenQuiz {
             .iter()
             .map(|candidate| config.selection.word_weight(&candidate.answers, now))
             .collect();
-        // Options are built only for the picked word; a word that cannot get them is
-        // zeroed and the pick repeated, which equals picking among eligible words only.
+        // Options are built only for the picked word; a word that cannot get
+        // them is zeroed and the pick repeated, which equals picking among
+        // eligible words only.
         loop {
             let index = weights.iter().copied().collect::<Weights>().pick(rng)?;
             let candidate = &candidates[index];
@@ -116,8 +116,9 @@ impl<S: QuizSender> QuizService<S> {
         Ok(ChosenQuiz::choose(&candidates, &self.config, now, &mut rng).is_some())
     }
 
-    /// Scheduler path of `dispatch`: pause and schedule are checked again because
-    /// they can change between listing due users and sending. `/quiz` skips this.
+    /// Scheduler path of `dispatch`: pause and schedule are checked again
+    /// because they can change between listing due users and sending. `/quiz`
+    /// skips this.
     pub async fn dispatch_due(
         &self,
         user: UserId,
@@ -187,10 +188,10 @@ impl<S: QuizSender> QuizService<S> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::QuizConfig;
-    use crate::ids::CollectionId;
     use rand::SeedableRng;
+
+    use super::*;
+    use crate::{config::QuizConfig, ids::CollectionId};
 
     pub fn candidate(word_id: i64, collection_id: i64, term: &str, translation: &str) -> Candidate {
         Candidate {

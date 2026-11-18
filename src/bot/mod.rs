@@ -4,26 +4,26 @@ mod handlers;
 pub mod limiter;
 pub mod texts;
 
-use std::convert::Infallible;
-use std::future::Future;
-use std::sync::Arc;
+use std::{convert::Infallible, future::Future, sync::Arc};
 
-use teloxide::RequestError;
-use teloxide::adaptors::Throttle;
-use teloxide::adaptors::throttle::Limits;
-use teloxide::dispatching::{DefaultKey, ShutdownToken};
-use teloxide::errors::ApiError;
-use teloxide::prelude::*;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
-use teloxide::update_listeners;
+use teloxide::{
+    RequestError,
+    adaptors::{Throttle, throttle::Limits},
+    dispatching::{DefaultKey, ShutdownToken},
+    errors::ApiError,
+    prelude::*,
+    types::{InlineKeyboardButton, InlineKeyboardMarkup},
+    update_listeners,
+};
 
-use crate::bot::callback::CallbackAction;
-use crate::bot::handlers::Handlers;
-use crate::config::Config;
-use crate::ids::{MessageId, QuizId, UserId};
-use crate::scheduler::Scheduler;
-use crate::service::{QuizSender, QuizService, SendError};
-use crate::storage::Storage;
+use crate::{
+    bot::{callback::CallbackAction, handlers::Handlers},
+    config::Config,
+    ids::{MessageId, QuizId, UserId},
+    scheduler::Scheduler,
+    service::{QuizSender, QuizService, SendError},
+    storage::Storage,
+};
 
 /// The bot behind Telegram's rate limits.
 pub type TelegramBot = Throttle<Bot>;
@@ -70,7 +70,8 @@ impl TelegramSender {
 }
 
 impl TelegramSender {
-    /// Sends the quiz message; shared by the scheduler path and `/quiz` resends.
+    /// Sends the quiz message; shared by the scheduler path and `/quiz`
+    /// resends.
     pub fn send(
         &self,
         user: UserId,

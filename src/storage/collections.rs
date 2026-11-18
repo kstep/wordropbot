@@ -1,10 +1,11 @@
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, sqlite::SqliteRow};
 
 use super::Storage;
-use crate::code::Code;
-use crate::ids::{CollectionId, MessageId, UserId};
-use crate::time::Timestamp;
+use crate::{
+    code::Code,
+    ids::{CollectionId, MessageId, UserId},
+    time::Timestamp,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collection {
@@ -78,7 +79,8 @@ impl Storage {
         Ok(Some(collection))
     }
 
-    /// Joins (or re-activates an existing membership of) the collection with this code.
+    /// Joins (or re-activates an existing membership of) the collection with
+    /// this code.
     pub async fn join_collection(
         &self,
         user_id: UserId,
@@ -148,8 +150,9 @@ impl Storage {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Returns `None` if the user is not a member. Answered quizzes are kept so the
-    /// history returns on rejoin; the collection is deleted with its last member.
+    /// Returns `None` if the user is not a member. Answered quizzes are kept so
+    /// the history returns on rejoin; the collection is deleted with its last
+    /// member.
     pub async fn leave_collection(
         &self,
         user_id: UserId,
@@ -238,8 +241,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::period::Period;
-    use crate::storage::testing::*;
+    use crate::{period::Period, storage::testing::*};
 
     fn code(text: &str) -> Code {
         text.parse().unwrap()

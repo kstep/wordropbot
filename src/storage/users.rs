@@ -1,10 +1,11 @@
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, sqlite::SqliteRow};
 
 use super::Storage;
-use crate::ids::{CollectionId, UserId};
-use crate::period::Period;
-use crate::time::Timestamp;
+use crate::{
+    ids::{CollectionId, UserId},
+    period::Period,
+    time::Timestamp,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
@@ -57,7 +58,8 @@ impl Storage {
             .await
     }
 
-    /// Returns whether a quiz is open; the next quiz is rescheduled only if none is.
+    /// Returns whether a quiz is open; the next quiz is rescheduled only if
+    /// none is.
     pub async fn set_period(
         &self,
         id: UserId,
@@ -104,8 +106,9 @@ impl Storage {
         Ok(open)
     }
 
-    /// Schedules the user's next quiz one period after `now`. Takes a transaction
-    /// so the period read and the update cannot interleave with another writer.
+    /// Schedules the user's next quiz one period after `now`. Takes a
+    /// transaction so the period read and the update cannot interleave with
+    /// another writer.
     pub(super) async fn reschedule(
         transaction: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
         user_id: UserId,

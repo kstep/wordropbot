@@ -1,9 +1,9 @@
-use rand::Rng;
-use rand::distr::Distribution;
-use rand::distr::weighted::WeightedIndex;
+use rand::{
+    Rng,
+    distr::{Distribution, weighted::WeightedIndex},
+};
 
-use crate::config::SelectionConfig;
-use crate::time::Timestamp;
+use crate::{config::SelectionConfig, time::Timestamp};
 
 const SECS_PER_DAY: f64 = 86_400.0;
 
@@ -19,7 +19,8 @@ impl SelectionConfig {
     pub fn error_rate(&self, answers: &[AnswerRecord], now: Timestamp) -> f64 {
         let (mut total, mut errors) = (0.0, 0.0);
         for answer in answers {
-            // `secs_since` clamps clock skew and future timestamps, so the weight never exceeds 1.
+            // `secs_since` clamps clock skew and future timestamps, so the
+            // weight never exceeds 1.
             let age_days = now.secs_since(answer.answered_at) as f64 / SECS_PER_DAY;
             let weight = 0.5_f64.powf(age_days / self.half_life_days);
             total += weight;
@@ -30,7 +31,8 @@ impl SelectionConfig {
         (errors + self.prior_error * self.prior_strength) / (total + self.prior_strength)
     }
 
-    /// Selection weight of a word: `min_weight` floor plus the scaled error rate.
+    /// Selection weight of a word: `min_weight` floor plus the scaled error
+    /// rate.
     pub fn word_weight(&self, answers: &[AnswerRecord], now: Timestamp) -> f64 {
         self.min_weight + (1.0 - self.min_weight) * self.error_rate(answers, now)
     }
@@ -47,7 +49,8 @@ impl FromIterator<f64> for Weights {
 }
 
 impl Weights {
-    /// Picks an index proportionally to the weights; `None` if empty or all zero/invalid.
+    /// Picks an index proportionally to the weights; `None` if empty or all
+    /// zero/invalid.
     pub fn pick<R: Rng + ?Sized>(&self, rng: &mut R) -> Option<usize> {
         WeightedIndex::new(&self.0)
             .ok()
@@ -57,9 +60,9 @@ impl Weights {
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng, rngs::StdRng};
+
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     const DAY: i64 = 86_400;
     fn config() -> SelectionConfig {

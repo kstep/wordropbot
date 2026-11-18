@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
-use rand::Rng;
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::{
+    Rng,
+    seq::{IndexedRandom, SliceRandom},
+};
 
 use crate::import::Normalized;
 
@@ -12,8 +14,8 @@ pub struct QuizOptions {
 }
 
 impl QuizOptions {
-    /// One correct option from `own` plus `count - 1` distractors from `pool`, shuffled.
-    /// `None` if there are not enough distinct distractors.
+    /// One correct option from `own` plus `count - 1` distractors from `pool`,
+    /// shuffled. `None` if there are not enough distinct distractors.
     pub fn new<R: Rng + ?Sized>(
         own: &[String],
         pool: &[String],
@@ -24,8 +26,8 @@ impl QuizOptions {
             return None;
         }
         let correct = own.choose(rng)?;
-        // Excludes every translation of the word, not only the chosen one, so a synonym never
-        // shows up as a wrong answer.
+        // Excludes every translation of the word, not only the chosen one, so a
+        // synonym never shows up as a wrong answer.
         let mut seen: HashSet<Normalized> =
             own.iter().map(|option| Normalized::new(option)).collect();
         let distractors: Vec<&String> = pool
@@ -62,9 +64,9 @@ impl QuizOptions {
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng, rngs::StdRng};
+
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()

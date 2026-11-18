@@ -3,15 +3,14 @@ mod quizzes;
 mod users;
 mod words;
 
-use std::error::Error;
-use std::path::Path;
-use std::time::Duration;
-
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use std::{error::Error, path::Path, time::Duration};
 
 pub use collections::{CancelledQuiz, Collection, CollectionSummary};
 pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, HardWord, OpenQuiz};
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+};
 pub use users::User;
 pub use words::{ImportSummary, WordView};
 
@@ -37,8 +36,9 @@ impl Storage {
         self.pool.close().await;
     }
 
-    /// Takes the write lock up front: a deferred transaction that reads and then
-    /// writes fails with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` does not retry.
+    /// Takes the write lock up front: a deferred transaction that reads and
+    /// then writes fails with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` does
+    /// not retry.
     async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
         self.pool.begin_with("BEGIN IMMEDIATE").await
     }
@@ -79,8 +79,10 @@ impl From<StoredValueError> for sqlx::Error {
 
 #[cfg(test)]
 mod testing {
-    use crate::ids::{MessageId, UserId};
-    use crate::time::Timestamp;
+    use crate::{
+        ids::{MessageId, UserId},
+        time::Timestamp,
+    };
 
     pub fn ts(secs: i64) -> Timestamp {
         Timestamp::from_secs(secs)

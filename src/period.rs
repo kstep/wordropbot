@@ -1,13 +1,13 @@
-use std::fmt;
-use std::str::FromStr;
-use std::time::Duration;
+use std::{fmt, str::FromStr, time::Duration};
 
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer};
-use sqlx::error::BoxDynError;
-use sqlx::sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef};
+use serde::{Deserialize, Deserializer, de::Error as _};
+use sqlx::{
+    error::BoxDynError,
+    sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef},
+};
 
-/// A positive whole number of seconds that fits in `i64`, the type SQLite stores.
+/// A positive whole number of seconds that fits in `i64`, the type SQLite
+/// stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Period(i64);
 

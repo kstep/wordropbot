@@ -1,7 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::ids::UserId;
-use crate::time::Timestamp;
+use crate::{ids::UserId, time::Timestamp};
 
 const WINDOW_SECS: u64 = 60;
 

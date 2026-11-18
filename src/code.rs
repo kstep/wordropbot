@@ -1,9 +1,10 @@
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use rand::{CryptoRng, Rng};
-use sqlx::error::BoxDynError;
-use sqlx::sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef};
+use sqlx::{
+    error::BoxDynError,
+    sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef},
+};
 
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const HALF: usize = 4;
@@ -22,7 +23,8 @@ pub enum ParseCodeError {
 }
 
 impl Code {
-    /// Needs a CSPRNG because the code is the only credential for joining a collection.
+    /// Needs a CSPRNG because the code is the only credential for joining a
+    /// collection.
     pub fn generate<R: CryptoRng + Rng + ?Sized>(rng: &mut R) -> Code {
         let mut code = String::with_capacity(2 * HALF + 1);
         for i in 0..2 * HALF {
@@ -94,9 +96,9 @@ impl fmt::Display for Code {
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng, rngs::StdRng};
+
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     const ALPHABET: &str = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 

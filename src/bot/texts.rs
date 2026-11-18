@@ -33,7 +33,8 @@ const PAUSED_NOTE: &str = "Квизы приостановлены. Возобн
 
 /// The help message, which also names how many words a quiz needs.
 pub struct Help {
-    /// `quiz.options`: a quiz needs that many words with different translations.
+    /// `quiz.options`: a quiz needs that many words with different
+    /// translations.
     pub quiz_options: usize,
     pub paused: bool,
 }
@@ -92,7 +93,8 @@ impl fmt::Display for Truncated<'_> {
         let text = self.0;
         match text.char_indices().nth(MAX_MESSAGE_CHARS) {
             Some(_) => {
-                // Keep room for the ellipsis so the whole message fits the limit.
+                // Keep room for the ellipsis so the whole message fits the
+                // limit.
                 let keep = text
                     .char_indices()
                     .nth(MAX_MESSAGE_CHARS - 1)
@@ -230,8 +232,7 @@ impl fmt::Display for StatsReport<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::WordId;
-    use crate::storage::HardWord;
+    use crate::{ids::WordId, storage::HardWord};
 
     #[test]
     fn words_page_fits_telegram_limit() {

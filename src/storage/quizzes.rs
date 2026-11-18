@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, sqlite::SqliteRow};
 
 use super::{CancelledQuiz, Storage, StoredValueError};
-use crate::config::SelectionConfig;
-use crate::ids::{CollectionId, MessageId, QuizId, UserId, WordId};
-use crate::selection::AnswerRecord;
-use crate::time::Timestamp;
+use crate::{
+    config::SelectionConfig,
+    ids::{CollectionId, MessageId, QuizId, UserId, WordId},
+    selection::AnswerRecord,
+    time::Timestamp,
+};
 
 const HARDEST_LIMIT: usize = 10;
 
@@ -91,8 +91,9 @@ struct Loaded {
 }
 
 impl Storage {
-    /// Words of all the user's current collections, each with its translations and
-    /// the user's own answers. Reads each table once instead of once per word.
+    /// Words of all the user's current collections, each with its translations
+    /// and the user's own answers. Reads each table once instead of once per
+    /// word.
     pub async fn candidates(&self, user_id: UserId) -> Result<Vec<Candidate>, sqlx::Error> {
         let loaded = self.load_candidates(user_id, None).await?;
         Ok(loaded.into_iter().map(|item| item.candidate).collect())
@@ -221,7 +222,8 @@ impl Storage {
         .await
     }
 
-    /// Records the answer once and schedules the next quiz one period after `now`.
+    /// Records the answer once and schedules the next quiz one period after
+    /// `now`.
     pub async fn answer_quiz(
         &self,
         quiz_id: QuizId,
@@ -279,7 +281,8 @@ impl Storage {
         })
     }
 
-    /// Cancels the open quiz without recording an answer and reschedules the user.
+    /// Cancels the open quiz without recording an answer and reschedules the
+    /// user.
     pub async fn skip_quiz(
         &self,
         user_id: UserId,
@@ -361,14 +364,16 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::code::Code;
-    use crate::config::SelectionConfig;
-    use crate::import::ParsedPair;
-    use crate::period::Period;
-    use crate::storage::Storage;
-    use crate::storage::testing::*;
     use sqlx::Error;
+
+    use super::*;
+    use crate::{
+        code::Code,
+        config::SelectionConfig,
+        import::ParsedPair,
+        period::Period,
+        storage::{Storage, testing::*},
+    };
 
     const PERIOD: i64 = 600;
 
@@ -950,7 +955,8 @@ mod tests {
             .unwrap();
         assert_eq!(stats.word_count, 13);
         assert_eq!(stats.hardest.len(), 10);
-        // Equal rates, so term order decides and w10 is cut; unanswered w11 is excluded.
+        // Equal rates, so term order decides and w10 is cut; unanswered w11 is
+        // excluded.
         assert_eq!(stats.hardest[0].term, "w00");
         assert_eq!(stats.hardest[9].term, "w09");
     }

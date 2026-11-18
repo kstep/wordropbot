@@ -13,15 +13,16 @@ pub struct ParsedPair {
 #[derive(Debug, Default)]
 pub struct ParseReport {
     pub pairs: Vec<ParsedPair>,
-    /// 1-based numbers of lines that could not be parsed; blank lines are counted but not reported.
+    /// 1-based numbers of lines that could not be parsed; blank lines are
+    /// counted but not reported.
     pub bad_lines: Vec<usize>,
 }
 
 const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
 const DASHES: [&str; 3] = ["-", "–", "—"];
 
-/// Comparison form: NFC, lowercase, trimmed, inner whitespace collapsed. Accents are kept
-/// because they are significant in Greek.
+/// Comparison form: NFC, lowercase, trimmed, inner whitespace collapsed.
+/// Accents are kept because they are significant in Greek.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Normalized(String);
 
@@ -52,7 +53,8 @@ impl FromStr for ParsedPair {
 
     /// Splits one non-blank line into trimmed term and translation.
     fn from_str(line: &str) -> Result<ParsedPair, BadLine> {
-        // Dashes are searched in the raw line so that `слово - ` is a bad line, not a spaced pair.
+        // Dashes are searched in the raw line so that `слово - ` is a bad line,
+        // not a spaced pair.
         let dash = DASH_SEPARATORS
             .iter()
             .filter_map(|separator| line.find(separator).map(|pos| (pos, separator.len())))

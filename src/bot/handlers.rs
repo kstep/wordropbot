@@ -1,30 +1,36 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use teloxide::RequestError;
-use teloxide::errors::ApiError;
-use teloxide::prelude::*;
-use teloxide::types::{
-    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageId as TgMessageId,
+use rand::{SeedableRng, rngs::StdRng};
+use teloxide::{
+    RequestError,
+    errors::ApiError,
+    prelude::*,
+    types::{
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
+        MessageId as TgMessageId,
+    },
 };
 
-use crate::bot::callback::CallbackAction;
-use crate::bot::command::Command;
-use crate::bot::limiter::JoinLimiter;
-use crate::bot::texts::{
-    AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, StatsReport,
-    WORDS_PAGE_SIZE, WordsPage,
+use crate::{
+    bot::{
+        TelegramBot, TelegramSender,
+        callback::CallbackAction,
+        command::Command,
+        limiter::JoinLimiter,
+        texts::{
+            AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, StatsReport,
+            WORDS_PAGE_SIZE, WordsPage,
+        },
+    },
+    code::Code,
+    config::Config,
+    ids::{CollectionId, MessageId, QuizId, UserId, WordId},
+    import::ParseReport,
+    period::Period,
+    service::{DispatchOutcome, QuizService},
+    storage::{CollectionSummary, ImportSummary, Storage},
+    time::Timestamp,
 };
-use crate::bot::{TelegramBot, TelegramSender};
-use crate::code::Code;
-use crate::config::Config;
-use crate::ids::{CollectionId, MessageId, QuizId, UserId, WordId};
-use crate::import::ParseReport;
-use crate::period::Period;
-use crate::service::{DispatchOutcome, QuizService};
-use crate::storage::{CollectionSummary, ImportSummary, Storage};
-use crate::time::Timestamp;
 
 const APOLOGY: &str = "Что-то пошло не так, попробуй ещё раз позже.";
 const IMPORT_FORMAT: &str = "\
@@ -148,7 +154,8 @@ impl Handlers {
                     Some(APOLOGY)
                 }
             },
-            // Group or inline-mode buttons are not ours; the button still needs an answer.
+            // Group or inline-mode buttons are not ours; the button still needs
+            // an answer.
             None => None,
         };
         let mut answer = self.bot.answer_callback_query(query.id.clone());
@@ -465,7 +472,8 @@ impl Handlers {
         if !self.storage.set_active_collection(press.user, id).await? {
             return Ok(Some("Ты не участник этой коллекции."));
         }
-        // Refresh the "(активная)" mark. The choice is saved, so a failed refresh is not an error.
+        // Refresh the "(активная)" mark. The choice is saved, so a failed
+        // refresh is not an error.
         let collections = self.storage.list_collections(press.user).await?;
         let view = View::collections(&collections);
         if let Err(error) = self.edit(press, view.text, view.keyboard).await {
@@ -540,7 +548,8 @@ impl Handlers {
     }
 
     async fn dismiss(&self, press: Press) -> Reply<Notice> {
-        // Deleting is cosmetic: a failure only leaves the stale buttons in place.
+        // Deleting is cosmetic: a failure only leaves the stale buttons in
+        // place.
         let _ = self
             .bot
             .delete_message(ChatId::from(press.user), press.message)
@@ -550,7 +559,8 @@ impl Handlers {
 
     // Helpers.
 
-    /// `None` when the user has no active collection. The page is clamped to the valid range.
+    /// `None` when the user has no active collection. The page is clamped to
+    /// the valid range.
     async fn words_view(&self, user: UserId, page: i64) -> Reply<Option<View>> {
         let Some(collection) = self.active_collection(user).await? else {
             return Ok(None);
@@ -600,7 +610,8 @@ impl Handlers {
     }
 
     fn limiter(&self) -> MutexGuard<'_, JoinLimiter> {
-        // The limiter holds only counters, so a poisoned lock is still consistent.
+        // The limiter holds only counters, so a poisoned lock is still
+        // consistent.
         self.limiter.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -626,8 +637,9 @@ impl Handlers {
         Ok(())
     }
 
-    /// Shows the result of a change that is already committed. A failed edit must not
-    /// reach the apology path, since a retry would be wrong: send a new message instead.
+    /// Shows the result of a change that is already committed. A failed edit
+    /// must not reach the apology path, since a retry would be wrong: send a
+    /// new message instead.
     async fn show_committed(&self, press: Press, text: String) -> Notice {
         let Err(error) = self.edit(press, text.clone(), None).await else {
             return None;
@@ -660,7 +672,8 @@ impl Handlers {
         }
     }
 
-    /// The old message may be gone or too old to edit; that is not worth failing for.
+    /// The old message may be gone or too old to edit; that is not worth
+    /// failing for.
     async fn drop_keyboard(&self, user: UserId, message: Option<MessageId>) {
         let Some(message) = message else { return };
         let _ = self

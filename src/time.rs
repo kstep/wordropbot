@@ -1,5 +1,7 @@
-use std::ops::Add;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    ops::Add,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::period::Period;
 

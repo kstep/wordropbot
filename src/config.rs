@@ -1,8 +1,8 @@
-use std::fmt;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::{
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use serde::Deserialize;
 
@@ -12,8 +12,8 @@ use crate::period::Period;
 pub enum ConfigError {
     #[error("cannot read config {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
-    /// Only the message and line are kept: `toml::de::Error`'s `Display` quotes the
-    /// offending source line, which could leak a malformed token into logs.
+    /// Only the message and line are kept: `toml::de::Error`'s `Display` quotes
+    /// the offending source line, which could leak a malformed token into logs.
     #[error("invalid config{}: {message}", line.map_or(String::new(), |number| format!(" (line {number})")))]
     Parse {
         message: String,

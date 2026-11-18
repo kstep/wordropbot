@@ -1,17 +1,19 @@
-use std::io::{IsTerminal, stdout};
-use std::path::PathBuf;
-use std::process::ExitCode;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    io::{IsTerminal, stdout},
+    path::PathBuf,
+    process::ExitCode,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::watch;
-use tokio::time::timeout;
-use wordropbot::bot::BotApp;
-use wordropbot::config::Config;
-use wordropbot::storage::Storage;
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    sync::watch,
+    time::timeout,
+};
+use wordropbot::{bot::BotApp, config::Config, storage::Storage};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONFIG: &str = "config.toml";
@@ -60,7 +62,8 @@ async fn run() -> anyhow::Result<()> {
 
     let mut dispatcher_result = None;
     let mut scheduler_result = None;
-    // The dispatcher fails at start without Telegram; keep running only if it runs.
+    // The dispatcher fails at start without Telegram; keep running only if it
+    // runs.
     tokio::select! {
         _ = sigterm.recv() => tracing::info!("SIGTERM received, shutting down"),
         _ = sigint.recv() => tracing::info!("SIGINT received, shutting down"),
@@ -75,7 +78,8 @@ async fn run() -> anyhow::Result<()> {
     let stopping = async {
         if dispatcher_result.is_none() {
             dispatcher_result = Some(match token.shutdown() {
-                // A dispatcher that dies while shutting down never completes `done`.
+                // A dispatcher that dies while shutting down never completes
+                // `done`.
                 Ok(done) => tokio::select! {
                     _ = done => (&mut dispatcher).await,
                     result = &mut dispatcher => result,
@@ -111,7 +115,8 @@ async fn run() -> anyhow::Result<()> {
         // Aborting is how an idle dispatcher is stopped on a signal.
         (_, Some(Err(error))) if error.is_cancelled() && signalled => Ok(()),
         (_, Some(Err(error))) => bail!("telegram dispatcher task failed: {error}"),
-        // Only a signal gets here; the stop timed out before the dispatcher finished.
+        // Only a signal gets here; the stop timed out before the dispatcher
+        // finished.
         (_, None) => Ok(()),
     }
 }
