@@ -51,26 +51,28 @@ fn split_line(line: &str) -> Option<(&str, &str)> {
     Some((term, translation))
 }
 
-pub fn parse_pairs(text: &str, limits: &LimitsConfig) -> ParseReport {
-    let mut report = ParseReport::default();
-    for (idx, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match split_line(line) {
-            Some((term, translation))
-                if term.chars().count() <= limits.max_term_chars
-                    && translation.chars().count() <= limits.max_translation_chars =>
-            {
-                report.pairs.push(ParsedPair {
-                    term: term.into(),
-                    translation: translation.into(),
-                });
+impl ParseReport {
+    pub fn parse(text: &str, limits: &LimitsConfig) -> ParseReport {
+        let mut report = ParseReport::default();
+        for (idx, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
             }
-            _ => report.bad_lines.push(idx + 1),
+            match split_line(line) {
+                Some((term, translation))
+                    if term.chars().count() <= limits.max_term_chars
+                        && translation.chars().count() <= limits.max_translation_chars =>
+                {
+                    report.pairs.push(ParsedPair {
+                        term: term.into(),
+                        translation: translation.into(),
+                    });
+                }
+                _ => report.bad_lines.push(idx + 1),
+            }
         }
+        report
     }
-    report
 }
 
 #[cfg(test)]
@@ -95,11 +97,11 @@ mod tests {
     #[test]
     fn splits_on_first_space() {
         assert_eq!(
-            parse_pairs("σπίτι дом", &limits()).pairs,
+            ParseReport::parse("σπίτι дом", &limits()).pairs,
             [pair("σπίτι", "дом")]
         );
         assert_eq!(
-            parse_pairs("run два слова", &limits()).pairs,
+            ParseReport::parse("run два слова", &limits()).pairs,
             [pair("run", "два слова")]
         );
     }
@@ -108,7 +110,7 @@ mod tests {
         for line in ["το σπίτι - дом", "το σπίτι – дом", "το σπίτι — дом"]
         {
             assert_eq!(
-                parse_pairs(line, &limits()).pairs,
+                ParseReport::parse(line, &limits()).pairs,
                 [pair("το σπίτι", "дом")],
                 "{line}"
             );
@@ -117,31 +119,37 @@ mod tests {
     #[test]
     fn earliest_dash_separator_wins() {
         assert_eq!(
-            parse_pairs("a — b - c", &limits()).pairs,
+            ParseReport::parse("a — b - c", &limits()).pairs,
             [pair("a", "b - c")]
         );
     }
     #[test]
     fn reports_bad_lines_and_skips_blank() {
-        let r = parse_pairs("a б\n\nодно\n  \nв г", &limits());
+        let r = ParseReport::parse("a б\n\nодно\n  \nв г", &limits());
         assert_eq!(r.pairs, [pair("a", "б"), pair("в", "г")]);
         assert_eq!(r.bad_lines, [3]);
     }
     #[test]
     fn empty_side_of_dash_is_bad() {
-        assert_eq!(parse_pairs("слово - ", &limits()).bad_lines, [1]);
-        assert_eq!(parse_pairs(" - перевод", &limits()).bad_lines, [1]);
+        assert_eq!(ParseReport::parse("слово - ", &limits()).bad_lines, [1]);
+        assert_eq!(ParseReport::parse(" - перевод", &limits()).bad_lines, [1]);
     }
     #[test]
     fn dash_only_side_is_bad() {
         for line in ["слово -", "слово –", "слово —", "- слово"] {
-            assert_eq!(parse_pairs(line, &limits()).bad_lines, [1], "{line}");
+            assert_eq!(ParseReport::parse(line, &limits()).bad_lines, [1], "{line}");
         }
     }
     #[test]
     fn too_long_is_bad() {
-        assert_eq!(parse_pairs("абвгдежзийк x", &limits()).bad_lines, [1]);
-        assert_eq!(parse_pairs("x абвгдежзийк", &limits()).bad_lines, [1]);
+        assert_eq!(
+            ParseReport::parse("абвгдежзийк x", &limits()).bad_lines,
+            [1]
+        );
+        assert_eq!(
+            ParseReport::parse("x абвгдежзийк", &limits()).bad_lines,
+            [1]
+        );
     }
     #[test]
     fn normalizes() {
