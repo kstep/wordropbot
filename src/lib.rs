@@ -4,6 +4,8 @@ pub mod ids;
 pub mod import;
 pub mod period;
 pub mod quiz;
+pub mod scheduler;
 pub mod selection;
+pub mod service;
 pub mod storage;
 pub mod time;
