@@ -164,8 +164,8 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
         for (word_id, text) in translations {
-            if let Some(&i) = by_word.get(&word_id) {
-                loaded[i].candidate.translations.push(text);
+            if let Some(&position) = by_word.get(&word_id) {
+                loaded[position].candidate.translations.push(text);
             }
         }
 
@@ -181,8 +181,8 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
         for (word_id, answered_at, is_correct) in answers {
-            if let Some(&i) = by_word.get(&word_id) {
-                loaded[i].candidate.answers.push(AnswerRecord {
+            if let Some(&position) = by_word.get(&word_id) {
+                loaded[position].candidate.answers.push(AnswerRecord {
                     answered_at,
                     is_correct,
                 });
@@ -972,16 +972,18 @@ mod tests {
     #[tokio::test]
     async fn stats_cap_hardest_at_ten_and_break_ties_by_term() {
         let fixture = fixture().await;
-        let pairs: Vec<_> = (0..12).map(|i| pair(&format!("w{i:02}"), "x")).collect();
+        let pairs: Vec<_> = (0..12)
+            .map(|number| pair(&format!("w{number:02}"), "x"))
+            .collect();
         fixture
             .storage
             .import_pairs(fixture.collection, &pairs)
             .await
             .unwrap();
-        for i in 0..11 {
+        for number in 0..11 {
             let word = fixture
                 .storage
-                .find_word(fixture.collection, &format!("w{i:02}"))
+                .find_word(fixture.collection, &format!("w{number:02}"))
                 .await
                 .unwrap()
                 .unwrap()

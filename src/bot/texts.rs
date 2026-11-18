@@ -98,7 +98,7 @@ impl fmt::Display for Truncated<'_> {
                 let keep = text
                     .char_indices()
                     .nth(MAX_MESSAGE_CHARS - 1)
-                    .map_or(text.len(), |(i, _)| i);
+                    .map_or(text.len(), |(byte_index, _)| byte_index);
                 formatter.write_str(&text[..keep])?;
                 formatter.write_str("…")
             }
@@ -238,8 +238,8 @@ mod tests {
     fn words_page_fits_telegram_limit() {
         let long = "щ".repeat(200);
         let words: Vec<_> = (0..WORDS_PAGE_SIZE)
-            .map(|i| WordView {
-                id: WordId(i),
+            .map(|number| WordView {
+                id: WordId(number),
                 term: long.clone(),
                 translations: vec![long.clone(); 50],
             })

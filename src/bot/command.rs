@@ -21,16 +21,16 @@ pub enum Command {
 
 impl Command {
     /// Parses the argument of `/collection`.
-    fn collection(arg: &str) -> Command {
-        if arg.is_empty() {
+    fn collection(argument: &str) -> Command {
+        if argument.is_empty() {
             return Command::CollectionList;
         }
-        match arg.split_once(char::is_whitespace) {
+        match argument.split_once(char::is_whitespace) {
             Some((word, title)) if word.eq_ignore_ascii_case("new") && !title.trim().is_empty() => {
                 Command::CollectionNew(title.trim().to_owned())
             }
-            None if arg.eq_ignore_ascii_case("new") => Command::Unknown,
-            _ => Command::CollectionJoin(arg.to_owned()),
+            None if argument.eq_ignore_ascii_case("new") => Command::Unknown,
+            _ => Command::CollectionJoin(argument.to_owned()),
         }
     }
 }
@@ -44,23 +44,23 @@ impl FromStr for Command {
 
     fn from_str(text: &str) -> Result<Command, NotCommand> {
         let body = text.trim().strip_prefix('/').ok_or(NotCommand)?;
-        let (head, arg) = match body.split_once(char::is_whitespace) {
-            Some((head, arg)) => (head, arg.trim()),
+        let (head, argument) = match body.split_once(char::is_whitespace) {
+            Some((head, argument)) => (head, argument.trim()),
             None => (body, ""),
         };
         // Drop the `@botname` mention that Telegram adds in group chats.
         let name = head.split_once('@').map_or(head, |(name, _)| name);
         let required = |make: fn(String) -> Command| {
-            if arg.is_empty() {
+            if argument.is_empty() {
                 Command::Unknown
             } else {
-                make(arg.to_owned())
+                make(argument.to_owned())
             }
         };
         Ok(match name.to_lowercase().as_str() {
             "start" => Command::Start,
             "help" => Command::Help,
-            "collection" => Command::collection(arg),
+            "collection" => Command::collection(argument),
             "words" => Command::Words,
             "remove" => required(Command::Remove),
             "stats" => Command::Stats,

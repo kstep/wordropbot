@@ -168,9 +168,9 @@ mod tests {
         async fn add_words(&self, count: usize) {
             let existing = self.storage.count_words(self.collection).await.unwrap() as usize;
             let pairs: Vec<ParsedPair> = (existing..existing + count)
-                .map(|i| ParsedPair {
-                    term: format!("term{i}"),
-                    translation: format!("перевод{i}"),
+                .map(|number| ParsedPair {
+                    term: format!("term{number}"),
+                    translation: format!("перевод{number}"),
                 })
                 .collect();
             self.storage
@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn tick_stops_walking_users_after_shutdown() {
         let fixture = fixture_with_words(2, 4).await;
-        let (_tx, stopped) = watch::channel(true);
+        let (_stop, stopped) = watch::channel(true);
         assert_eq!(
             fixture
                 .scheduler
@@ -480,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn run_exits_when_already_shut_down() {
         let fixture = fixture_with_words(1, 4).await;
-        let (_tx, stopped) = watch::channel(true);
+        let (_stop, stopped) = watch::channel(true);
         time::timeout(Duration::from_secs(5), fixture.scheduler.run(stopped))
             .await
             .expect("run did not exit");
@@ -491,8 +491,8 @@ mod tests {
     async fn repeated_translations_give_no_eligible_words() {
         let fixture = fixture_with_words(1, 0).await;
         let pairs: Vec<ParsedPair> = (0..6)
-            .map(|i| ParsedPair {
-                term: format!("term{i}"),
+            .map(|number| ParsedPair {
+                term: format!("term{number}"),
                 translation: "одно".into(),
             })
             .collect();

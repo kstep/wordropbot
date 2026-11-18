@@ -57,10 +57,13 @@ impl FromStr for ParsedPair {
         // not a spaced pair.
         let dash = DASH_SEPARATORS
             .iter()
-            .filter_map(|separator| line.find(separator).map(|pos| (pos, separator.len())))
-            .min_by_key(|&(pos, _)| pos);
+            .filter_map(|separator| {
+                line.find(separator)
+                    .map(|position| (position, separator.len()))
+            })
+            .min_by_key(|&(position, _)| position);
         let (term, translation) = match dash {
-            Some((pos, len)) => (&line[..pos], &line[pos + len..]),
+            Some((position, length)) => (&line[..position], &line[position + length..]),
             None => line.trim().split_once(char::is_whitespace).ok_or(BadLine)?,
         };
         let (term, translation) = (term.trim(), translation.trim());
