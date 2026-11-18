@@ -1,4 +1,42 @@
+use rand::Rng;
+use rand::distr::Distribution;
+use rand::distr::weighted::WeightedIndex;
+
 use crate::config::SelectionConfig;
+
+const SECS_PER_DAY: f64 = 86_400.0;
+
+/// One finished answer to a quiz about a word.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnswerRecord {
+    pub answered_at: i64,
+    pub is_correct: bool,
+}
+
+/// Recency-weighted error rate, smoothed towards the configured prior.
+pub fn error_rate(answers: &[AnswerRecord], now: i64, cfg: &SelectionConfig) -> f64 {
+    let (mut total, mut errors) = (0.0, 0.0);
+    for a in answers {
+        // Clock skew or future timestamps must not inflate the weight above 1.
+        let age_days = (now - a.answered_at).max(0) as f64 / SECS_PER_DAY;
+        let w = 0.5_f64.powf(age_days / cfg.half_life_days);
+        total += w;
+        if !a.is_correct {
+            errors += w;
+        }
+    }
+    (errors + cfg.prior_error * cfg.prior_strength) / (total + cfg.prior_strength)
+}
+
+/// Selection weight of a word: `min_weight` floor plus the scaled error rate.
+pub fn word_weight(answers: &[AnswerRecord], now: i64, cfg: &SelectionConfig) -> f64 {
+    cfg.min_weight + (1.0 - cfg.min_weight) * error_rate(answers, now, cfg)
+}
+
+/// Picks an index proportionally to `weights`; `None` if empty or all zero/invalid.
+pub fn pick_weighted<R: Rng + ?Sized>(weights: &[f64], rng: &mut R) -> Option<usize> {
+    WeightedIndex::new(weights).ok().map(|d| d.sample(rng))
+}
 
 #[cfg(test)]
 mod tests {
