@@ -3122,6 +3122,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "unicode-properties",
 ]
 
 [[package]]

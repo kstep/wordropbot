@@ -4,6 +4,7 @@ use super::{Storage, quizzes::QuizScope};
 use crate::{
     code::Code,
     ids::{CollectionId, MessageId, UserId},
+    import::Normalized,
     time::Timestamp,
 };
 
@@ -21,7 +22,7 @@ pub enum CollectionNameError {
 
 impl CollectionName {
     pub fn new(name: &str, max_chars: usize) -> Result<CollectionName, CollectionNameError> {
-        if name.trim().is_empty() {
+        if Normalized::new(name).as_str().is_empty() {
             return Err(CollectionNameError::Empty);
         }
         if name.chars().count() > max_chars {
@@ -245,10 +246,13 @@ mod tests {
             Err(CollectionNameError::TooLong { max: 8 })
         );
         assert_eq!(CollectionName::new("", 8), Err(CollectionNameError::Empty));
-        assert_eq!(
-            CollectionName::new("  ", 8),
-            Err(CollectionNameError::Empty)
-        );
+        for blank in ["  ", "\u{200b}", " \u{ad} "] {
+            assert_eq!(
+                CollectionName::new(blank, 8),
+                Err(CollectionNameError::Empty),
+                "{blank:?}"
+            );
+        }
     }
 
     #[tokio::test]

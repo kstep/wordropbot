@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use unicode_normalization::UnicodeNormalization;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::config::LimitsConfig;
 
@@ -21,21 +22,23 @@ pub struct ParseReport {
 const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
 const DASHES: [&str; 3] = ["-", "–", "—"];
 
-/// Comparison form: NFC, lowercase, trimmed, inner whitespace collapsed.
-/// Accents are kept because they are significant in Greek.
+/// Comparison form: invisible format characters removed, NFC, lowercase,
+/// trimmed, inner whitespace collapsed. Accents are kept because they are
+/// significant in Greek.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Normalized(String);
 
 impl Normalized {
     pub fn new(text: &str) -> Normalized {
-        let composed: String = text.nfc().collect();
-        Normalized(
-            composed
-                .to_lowercase()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
+        let lowercase = text
+            .chars()
+            .filter(|character| character.general_category() != GeneralCategory::Format)
+            .nfc()
+            .collect::<String>()
+            .to_lowercase();
+        // Lowercasing can leave sequences that NFC composes further.
+        let composed: String = lowercase.nfc().collect();
+        Normalized(composed.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 
     pub fn as_str(&self) -> &str {
@@ -67,10 +70,11 @@ impl FromStr for ParsedPair {
             None => line.trim().split_once(char::is_whitespace).ok_or(BadLine)?,
         };
         let (term, translation) = (term.trim(), translation.trim());
-        if [term, translation]
-            .iter()
-            .any(|side| side.is_empty() || DASHES.contains(side))
-        {
+        let is_blank = |side: &str| {
+            let visible = Normalized::new(side);
+            visible.as_str().is_empty() || DASHES.contains(&visible.as_str())
+        };
+        if is_blank(term) || is_blank(translation) {
             return Err(BadLine);
         }
         Ok(ParsedPair {
@@ -182,6 +186,33 @@ mod tests {
     fn pair_parses_through_from_str() {
         assert_eq!("σπίτι дом".parse(), Ok(pair("σπίτι", "дом")));
         assert_eq!("одно".parse::<ParsedPair>(), Err(BadLine));
+    }
+    #[test]
+    fn case_variants_of_composed_letters_match() {
+        assert_eq!(
+            Normalized::new("\u{3aa}\u{301}"),
+            Normalized::new("\u{390}")
+        );
+        assert_eq!(
+            Normalized::new("\u{3ab}\u{301}"),
+            Normalized::new("\u{3b0}")
+        );
+    }
+    #[test]
+    fn invisible_characters_do_not_distinguish_text() {
+        for text in ["дом\u{200b}", "до\u{ad}м", "\u{feff}дом", "д\u{2060}ом"] {
+            assert_eq!(Normalized::new(text), Normalized::new("дом"), "{text:?}");
+        }
+    }
+    #[test]
+    fn side_of_only_invisible_characters_is_bad() {
+        for line in ["x \u{200b}", "\u{200b} дом", "x - \u{ad}\u{200b}"] {
+            assert_eq!(
+                ParseReport::parse(line, &limits()).bad_lines,
+                [1],
+                "{line:?}"
+            );
+        }
     }
     #[test]
     fn normalizes() {

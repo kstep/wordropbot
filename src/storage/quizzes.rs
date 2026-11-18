@@ -6,6 +6,7 @@ use super::{CancelledQuiz, Storage};
 use crate::{
     config::SelectionConfig,
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
+    import::Normalized,
     selection::AnswerRecord,
     time::Timestamp,
 };
@@ -24,10 +25,8 @@ pub struct Candidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenQuiz {
     pub id: QuizId,
-    pub word_id: WordId,
     pub term: String,
     pub options: Vec<String>,
-    pub correct_index: usize,
     pub message_id: Option<MessageId>,
 }
 
@@ -95,14 +94,11 @@ impl QuizScope {
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     fn from_row(row: &'r SqliteRow) -> Result<OpenQuiz, sqlx::Error> {
-        let index: u32 = row.try_get("correct_index")?;
         let options: Json<Vec<String>> = row.try_get("options")?;
         Ok(OpenQuiz {
             id: row.try_get("id")?,
-            word_id: row.try_get("word_id")?,
             term: row.try_get("term")?,
             options: options.0,
-            correct_index: index as usize,
             message_id: row.try_get("message_id")?,
         })
     }
@@ -213,7 +209,8 @@ impl Storage {
         .await
     }
 
-    /// Returns `None` if the user already has an open quiz.
+    /// Returns `None` if the user already has an open quiz or is no longer a
+    /// member of the word's collection.
     pub async fn create_quiz(
         &self,
         user_id: UserId,
@@ -224,7 +221,9 @@ impl Storage {
     ) -> Result<Option<QuizId>, sqlx::Error> {
         sqlx::query_scalar(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+             SELECT ?1, w.id, ?3, ?4, ?5 FROM words w \
+             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
+             WHERE w.id = ?2 ON CONFLICT DO NOTHING RETURNING id",
         )
         .bind(user_id)
         .bind(word_id)
@@ -248,8 +247,10 @@ impl Storage {
         Ok(())
     }
 
+    /// Removes a quiz that was never answered; a recorded answer is history
+    /// and stays, even if the send that created the quiz reports a failure.
     pub async fn delete_quiz(&self, quiz_id: QuizId) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM quizzes WHERE id = ?")
+        sqlx::query("DELETE FROM quizzes WHERE id = ? AND answered_at IS NULL")
             .bind(quiz_id)
             .execute(&self.pool)
             .await?;
@@ -258,7 +259,7 @@ impl Storage {
 
     pub async fn open_quiz(&self, user_id: UserId) -> Result<Option<OpenQuiz>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT q.id, q.word_id, w.term, q.options, q.correct_index, q.message_id \
+            "SELECT q.id, w.term, q.options, q.message_id \
              FROM quizzes q JOIN words w ON w.id = q.word_id \
              WHERE q.user_id = ? AND q.answered_at IS NULL",
         )
@@ -292,8 +293,16 @@ impl Storage {
         if chosen_index >= options.len() {
             return Ok(AnswerOutcome::Closed);
         }
-        let is_correct = chosen_index as i64 == correct_index;
-        let updated = sqlx::query(
+        let translations = Self::word_translations(&mut *transaction, word_id).await?;
+        // Options are frozen at creation, but a member may have imported one of
+        // them as a translation of this word since.
+        let chosen = Normalized::new(&options[chosen_index]);
+        let is_correct = chosen_index as i64 == correct_index
+            || translations
+                .iter()
+                .any(|translation| Normalized::new(translation) == chosen);
+        // The write lock has kept the row open since the SELECT above.
+        sqlx::query(
             "UPDATE quizzes SET answered_at = ?, chosen_index = ?, is_correct = ? \
              WHERE id = ? AND user_id = ? AND answered_at IS NULL",
         )
@@ -304,15 +313,11 @@ impl Storage {
         .bind(user_id)
         .execute(&mut *transaction)
         .await?;
-        if updated.rows_affected() == 0 {
-            return Ok(AnswerOutcome::Closed);
-        }
         Storage::reschedule(&mut transaction, user_id, now).await?;
         let term: String = sqlx::query_scalar("SELECT term FROM words WHERE id = ?")
             .bind(word_id)
             .fetch_one(&mut *transaction)
             .await?;
-        let translations = Self::word_translations(&mut *transaction, word_id).await?;
         transaction.commit().await?;
         Ok(AnswerOutcome::Answered {
             is_correct,
@@ -559,6 +564,71 @@ mod tests {
                 .answers
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_answered_quiz_keeps_recorded_answer() {
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .storage
+            .answer_quiz(quiz, uid(1), 0, ts(20))
+            .await
+            .unwrap();
+        fixture.storage.delete_quiz(quiz).await.unwrap();
+        let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
+        assert_eq!(candidates[0].answers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn translation_added_during_open_quiz_counts_as_correct() {
+        let fixture = fixture().await;
+        let quiz = fixture
+            .storage
+            .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &[pair("run", "Груша")])
+            .await
+            .unwrap();
+        assert!(matches!(
+            fixture
+                .storage
+                .answer_quiz(quiz, uid(1), 1, ts(20))
+                .await
+                .unwrap(),
+            AnswerOutcome::Answered {
+                is_correct: true,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn quiz_is_not_created_after_leaving_collection() {
+        let fixture = fixture().await;
+        fixture
+            .storage
+            .leave_collection(uid(2), fixture.collection, ts(5))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixture
+                .storage
+                .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
+                .await
+                .unwrap(),
+            None
         );
     }
 
@@ -834,7 +904,6 @@ mod tests {
         assert_eq!(open.id, quiz);
         assert_eq!(open.term, "run");
         assert_eq!(open.options, fixture.options);
-        assert_eq!(open.correct_index, 2);
         assert_eq!(open.message_id, Some(mid(5)));
         fixture.storage.delete_quiz(quiz).await.unwrap();
         assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_none());
