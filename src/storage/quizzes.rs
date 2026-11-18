@@ -1,3 +1,343 @@
+use std::collections::HashMap;
+
+use sqlx::Row;
+use sqlx::sqlite::SqliteRow;
+
+use super::{CancelledQuiz, Storage, decode_err};
+use crate::config::SelectionConfig;
+use crate::selection::{AnswerRecord, error_rate};
+
+const HARDEST_LIMIT: usize = 10;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub word_id: i64,
+    pub collection_id: i64,
+    pub term: String,
+    pub translations: Vec<String>,
+    pub answers: Vec<AnswerRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenQuiz {
+    pub id: i64,
+    pub word_id: i64,
+    pub term: String,
+    pub options: Vec<String>,
+    pub correct_index: usize,
+    pub message_id: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerOutcome {
+    Answered {
+        is_correct: bool,
+        term: String,
+        translations: Vec<String>,
+        chosen: String,
+    },
+    /// No such open quiz for this user, or the choice is out of range.
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CollectionStats {
+    pub word_count: i64,
+    pub answered: i64,
+    pub correct: i64,
+    pub hardest: Vec<(String, f64)>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("stored quiz index {0} is out of range")]
+struct BadStoredIndex(i64);
+
+fn parse_options(raw: &str) -> Result<Vec<String>, sqlx::Error> {
+    serde_json::from_str(raw).map_err(decode_err)
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
+    fn from_row(row: &'r SqliteRow) -> Result<OpenQuiz, sqlx::Error> {
+        let index: i64 = row.try_get("correct_index")?;
+        let options: String = row.try_get("options")?;
+        Ok(OpenQuiz {
+            id: row.try_get("id")?,
+            word_id: row.try_get("word_id")?,
+            term: row.try_get("term")?,
+            options: parse_options(&options)?,
+            correct_index: usize::try_from(index).map_err(|_| decode_err(BadStoredIndex(index)))?,
+            message_id: row.try_get("message_id")?,
+        })
+    }
+}
+
+/// A candidate together with the normalised term used for tie-breaking.
+struct Loaded {
+    candidate: Candidate,
+    term_norm: String,
+}
+
+impl Storage {
+    /// Words of all the user's current collections, each with its translations and
+    /// the user's own answers. Reads each table once instead of once per word.
+    pub async fn candidates(&self, user_id: i64) -> Result<Vec<Candidate>, sqlx::Error> {
+        let loaded = self.load_candidates(user_id, None).await?;
+        Ok(loaded.into_iter().map(|l| l.candidate).collect())
+    }
+
+    async fn load_candidates(
+        &self,
+        user_id: i64,
+        collection_id: Option<i64>,
+    ) -> Result<Vec<Loaded>, sqlx::Error> {
+        let words: Vec<(i64, i64, String, String)> = sqlx::query_as(
+            "SELECT w.id, w.collection_id, w.term, w.term_norm FROM words w \
+             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
+             WHERE (?2 IS NULL OR w.collection_id = ?2) ORDER BY w.id",
+        )
+        .bind(user_id)
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut loaded: Vec<Loaded> = Vec::with_capacity(words.len());
+        let mut by_word: HashMap<i64, usize> = HashMap::with_capacity(words.len());
+        for (word_id, collection_id, term, term_norm) in words {
+            by_word.insert(word_id, loaded.len());
+            loaded.push(Loaded {
+                candidate: Candidate {
+                    word_id,
+                    collection_id,
+                    term,
+                    translations: Vec::new(),
+                    answers: Vec::new(),
+                },
+                term_norm,
+            });
+        }
+
+        let translations: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT t.word_id, t.text FROM translations t \
+             JOIN words w ON w.id = t.word_id \
+             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
+             WHERE (?2 IS NULL OR w.collection_id = ?2) ORDER BY t.id",
+        )
+        .bind(user_id)
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for (word_id, text) in translations {
+            if let Some(&i) = by_word.get(&word_id) {
+                loaded[i].candidate.translations.push(text);
+            }
+        }
+
+        let answers: Vec<(i64, i64, bool)> = sqlx::query_as(
+            "SELECT q.word_id, q.answered_at, q.is_correct FROM quizzes q \
+             JOIN words w ON w.id = q.word_id \
+             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
+             WHERE q.user_id = ?1 AND q.answered_at IS NOT NULL \
+             AND (?2 IS NULL OR w.collection_id = ?2) ORDER BY q.id",
+        )
+        .bind(user_id)
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for (word_id, answered_at, is_correct) in answers {
+            if let Some(&i) = by_word.get(&word_id) {
+                loaded[i].candidate.answers.push(AnswerRecord {
+                    answered_at,
+                    is_correct,
+                });
+            }
+        }
+        Ok(loaded)
+    }
+
+    /// Returns `None` if the user already has an open quiz.
+    pub async fn create_quiz(
+        &self,
+        user_id: i64,
+        word_id: i64,
+        options: &[String],
+        correct_index: usize,
+        now: i64,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let options = serde_json::to_string(options).map_err(decode_err)?;
+        sqlx::query_scalar(
+            "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+        )
+        .bind(user_id)
+        .bind(word_id)
+        .bind(options)
+        .bind(correct_index as i64)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn set_quiz_message(&self, quiz_id: i64, message_id: i32) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE quizzes SET message_id = ? WHERE id = ?")
+            .bind(message_id)
+            .bind(quiz_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_quiz(&self, quiz_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM quizzes WHERE id = ?")
+            .bind(quiz_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn open_quiz(&self, user_id: i64) -> Result<Option<OpenQuiz>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT q.id, q.word_id, w.term, q.options, q.correct_index, q.message_id \
+             FROM quizzes q JOIN words w ON w.id = q.word_id \
+             WHERE q.user_id = ? AND q.answered_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Records the answer once and schedules the next quiz one period after `now`.
+    pub async fn answer_quiz(
+        &self,
+        quiz_id: i64,
+        user_id: i64,
+        chosen_index: usize,
+        now: i64,
+    ) -> Result<AnswerOutcome, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let row: Option<(i64, String, i64)> = sqlx::query_as(
+            "SELECT word_id, options, correct_index FROM quizzes \
+             WHERE id = ? AND user_id = ? AND answered_at IS NULL",
+        )
+        .bind(quiz_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((word_id, options, correct_index)) = row else {
+            return Ok(AnswerOutcome::Closed);
+        };
+        let mut options = parse_options(&options)?;
+        if chosen_index >= options.len() {
+            return Ok(AnswerOutcome::Closed);
+        }
+        let is_correct = chosen_index as i64 == correct_index;
+        let updated = sqlx::query(
+            "UPDATE quizzes SET answered_at = ?, chosen_index = ?, is_correct = ? \
+             WHERE id = ? AND user_id = ? AND answered_at IS NULL",
+        )
+        .bind(now)
+        .bind(chosen_index as i64)
+        .bind(is_correct)
+        .bind(quiz_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(AnswerOutcome::Closed);
+        }
+        sqlx::query("UPDATE users SET next_quiz_at = ? + period_secs WHERE id = ?")
+            .bind(now)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        let term: String = sqlx::query_scalar("SELECT term FROM words WHERE id = ?")
+            .bind(word_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let translations: Vec<String> =
+            sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
+                .bind(word_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok(AnswerOutcome::Answered {
+            is_correct,
+            term,
+            translations,
+            chosen: options.swap_remove(chosen_index),
+        })
+    }
+
+    /// Cancels the open quiz without recording an answer and reschedules the user.
+    pub async fn skip_quiz(
+        &self,
+        user_id: i64,
+        now: i64,
+    ) -> Result<Option<CancelledQuiz>, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let deleted: Option<(i64, Option<i32>)> = sqlx::query_as(
+            "DELETE FROM quizzes WHERE user_id = ? AND answered_at IS NULL \
+             RETURNING user_id, message_id",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((user_id, message_id)) = deleted else {
+            return Ok(None);
+        };
+        sqlx::query("UPDATE users SET next_quiz_at = ? + period_secs WHERE id = ?")
+            .bind(now)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(CancelledQuiz {
+            user_id,
+            message_id,
+        }))
+    }
+
+    /// Drops quizzes that were created but never sent, e.g. after a crash.
+    pub async fn delete_unsent_quizzes(&self) -> Result<u64, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM quizzes WHERE answered_at IS NULL AND message_id IS NULL")
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn collection_stats(
+        &self,
+        user_id: i64,
+        collection_id: i64,
+        now: i64,
+        cfg: &SelectionConfig,
+    ) -> Result<CollectionStats, sqlx::Error> {
+        let word_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
+                .bind(collection_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let loaded = self.load_candidates(user_id, Some(collection_id)).await?;
+        let (mut answered, mut correct) = (0, 0);
+        let mut ranked: Vec<(f64, String, String)> = Vec::new();
+        for l in loaded {
+            let answers = &l.candidate.answers;
+            answered += answers.len() as i64;
+            correct += answers.iter().filter(|a| a.is_correct).count() as i64;
+            if !answers.is_empty() {
+                ranked.push((error_rate(answers, now, cfg), l.term_norm, l.candidate.term));
+            }
+        }
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        ranked.truncate(HARDEST_LIMIT);
+        Ok(CollectionStats {
+            word_count,
+            answered,
+            correct,
+            hardest: ranked.into_iter().map(|(p, _, term)| (term, p)).collect(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stats_rank_hardest_words_with_answers_only() {
+    async fn stats_rank_hardest_by_error_rate() {
         let f = fixture().await;
         f.s.import_pairs(
             f.collection,
@@ -336,7 +676,6 @@ mod tests {
         .await
         .unwrap();
         let mut now = 1000;
-        // `run`: wrong; `a` and `b`: wrong, then tied on the same error rate; `unseen`: no answers.
         for (term, choice) in [("run", 1), ("a", 1), ("b", 1)] {
             let w = f.s.find_word(f.collection, term).await.unwrap().unwrap().id;
             let q =
@@ -366,15 +705,14 @@ mod tests {
         assert_eq!(stats.word_count, 4);
         assert_eq!((stats.answered, stats.correct), (4, 1));
         let terms: Vec<_> = stats.hardest.iter().map(|(t, _)| t.as_str()).collect();
-        // Older wrong answers weigh slightly less, so the ordering is by rate and
-        // then, for equal rates, by term; `unseen` has the lowest rate.
+        // The one correct answer (`unseen`) gives the lowest error rate.
         assert_eq!(terms.len(), 4);
         assert_eq!(terms.last(), Some(&"unseen"));
         assert!(stats.hardest.windows(2).all(|p| p[0].1 >= p[1].1));
     }
 
     #[tokio::test]
-    async fn stats_cap_hardest_at_ten_and_skip_unanswered() {
+    async fn stats_cap_hardest_at_ten_and_break_ties_by_term() {
         let f = fixture().await;
         let pairs: Vec<_> = (0..12).map(|i| pair(&format!("w{i:02}"), "x")).collect();
         f.s.import_pairs(f.collection, &pairs).await.unwrap();
@@ -392,9 +730,9 @@ mod tests {
             f.s.collection_stats(1, f.collection, 5, &cfg())
                 .await
                 .unwrap();
-        assert_eq!(stats.word_count, 14);
+        assert_eq!(stats.word_count, 13);
         assert_eq!(stats.hardest.len(), 10);
-        // Equal rates: the tie is broken by term, so the first ten come back.
+        // Equal rates, so term order decides and w10 is cut; unanswered w11 is excluded.
         assert_eq!(stats.hardest[0].0, "w00");
         assert_eq!(stats.hardest[9].0, "w09");
     }

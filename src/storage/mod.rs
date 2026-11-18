@@ -10,6 +10,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 pub use collections::{CancelledQuiz, Collection, CollectionSummary};
+pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, OpenQuiz};
 pub use users::User;
 pub use words::{ImportSummary, WordView};
 
