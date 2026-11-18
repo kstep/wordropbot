@@ -103,6 +103,13 @@ impl Storage {
         Ok(open)
     }
 
+    /// Moves the user's next quiz one period after `now`.
+    pub async fn postpone_user(&self, id: UserId, now: Timestamp) -> Result<(), sqlx::Error> {
+        let mut transaction = self.begin_write().await?;
+        Self::reschedule(&mut transaction, id, now).await?;
+        transaction.commit().await
+    }
+
     /// Schedules the user's next quiz one period after `now`. Takes a
     /// transaction so the period read and the update cannot interleave with
     /// another writer.

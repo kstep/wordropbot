@@ -25,16 +25,28 @@ use crate::{
     storage::Storage,
 };
 
+const FORBIDDEN_PREFIX: &str = "Forbidden";
+
 /// The bot behind Telegram's rate limits.
 pub type TelegramBot = Throttle<Bot>;
 
 impl From<RequestError> for SendError {
     fn from(error: RequestError) -> SendError {
-        match error {
-            RequestError::Api(ApiError::BotBlocked | ApiError::UserDeactivated) => {
-                SendError::Blocked
-            }
-            other => SendError::Other(other.to_string()),
+        let RequestError::Api(api_error) = &error else {
+            return SendError::Other(error.to_string());
+        };
+        match api_error {
+            ApiError::CantInitiateConversation | ApiError::CantTalkWithBots => SendError::Blocked,
+            ApiError::MessageTextIsEmpty
+            | ApiError::MessageIsTooLong
+            | ApiError::ButtonDataInvalid
+            | ApiError::ChatNotFound
+            | ApiError::UserNotFound => SendError::Rejected(error.to_string()),
+            // Forbidden responses without their own variant arrive as
+            // `Unknown`.
+            ApiError::Unknown(text) if text.starts_with(FORBIDDEN_PREFIX) => SendError::Blocked,
+            known if known.to_string().starts_with(FORBIDDEN_PREFIX) => SendError::Blocked,
+            _ => SendError::Other(error.to_string()),
         }
     }
 }
@@ -161,5 +173,43 @@ impl BotApp {
         self.dispatcher
             .try_dispatch_with_listener(listener, errors)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use teloxide::types::Seconds;
+
+    use super::*;
+
+    #[test]
+    fn telegram_errors_map_to_send_errors() {
+        for api_error in [
+            ApiError::BotBlocked,
+            ApiError::UserDeactivated,
+            ApiError::CantInitiateConversation,
+            ApiError::CantTalkWithBots,
+            ApiError::Unknown("Forbidden: bot is not allowed here".into()),
+        ] {
+            let error = RequestError::Api(api_error);
+            assert_eq!(SendError::from(error), SendError::Blocked);
+        }
+        for api_error in [
+            ApiError::MessageTextIsEmpty,
+            ApiError::MessageIsTooLong,
+            ApiError::ButtonDataInvalid,
+            ApiError::ChatNotFound,
+            ApiError::UserNotFound,
+        ] {
+            let error = RequestError::Api(api_error);
+            assert!(matches!(SendError::from(error), SendError::Rejected(_)));
+        }
+        let transient = [
+            RequestError::Api(ApiError::Unknown("Internal Server Error".into())),
+            RequestError::RetryAfter(Seconds::from_seconds(5)),
+        ];
+        for error in transient {
+            assert!(matches!(SendError::from(error), SendError::Other(_)));
+        }
     }
 }

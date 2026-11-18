@@ -98,6 +98,8 @@ mod tests {
         /// Signalled after each successful send, to stop in mid-walk.
         stop_after_send: Option<watch::Sender<bool>>,
         failures: HashMap<UserId, SendError>,
+        /// Skips the user's quiz in the middle of the next send.
+        cancel_during_send: Option<Storage>,
     }
 
     #[derive(Clone, Default)]
@@ -114,6 +116,10 @@ mod tests {
 
         fn stop_after_send(&self, stop: watch::Sender<bool>) {
             self.0.lock().unwrap().stop_after_send = Some(stop);
+        }
+
+        fn cancel_during_send(&self, storage: Storage) {
+            self.0.lock().unwrap().cancel_during_send = Some(storage);
         }
 
         fn cleared(&self) -> Vec<(UserId, MessageId)> {
@@ -140,7 +146,13 @@ mod tests {
                     Ok(FAKE_MESSAGE_ID)
                 }
             };
-            future::ready(result)
+            let cancel = state.cancel_during_send.take();
+            async move {
+                if let Some(storage) = cancel {
+                    storage.skip_quiz(user, ts(0)).await.unwrap();
+                }
+                result
+            }
         }
 
         fn clear_keyboard(
@@ -348,6 +360,44 @@ mod tests {
             fixture.storage.due_users(ts(100)).await.unwrap(),
             [UserId(1)]
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_send_postpones_user_by_one_period() {
+        let fixture = fixture_with_words(1, 4).await;
+        fixture
+            .sender
+            .fail(1, SendError::Rejected("message is too long".into()));
+        fixture
+            .scheduler
+            .tick(ts(100), &mut fixture.rng(), &fixture.running)
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(fixture.storage.due_users(ts(159)).await.unwrap().is_empty());
+        assert_eq!(
+            fixture.storage.due_users(ts(160)).await.unwrap(),
+            [UserId(1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn quiz_cancelled_during_send_loses_its_buttons() {
+        let fixture = fixture_with_words(1, 4).await;
+        fixture.sender.cancel_during_send(fixture.storage.clone());
+        fixture
+            .scheduler
+            .tick(ts(100), &mut fixture.rng(), &fixture.running)
+            .await
+            .unwrap();
+        assert_eq!(fixture.sender.cleared(), [(UserId(1), FAKE_MESSAGE_ID)]);
     }
 
     #[tokio::test]

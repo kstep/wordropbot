@@ -234,17 +234,18 @@ impl Storage {
         .await
     }
 
+    /// Returns `false` if the quiz no longer exists.
     pub async fn set_quiz_message(
         &self,
         quiz_id: QuizId,
         message_id: MessageId,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE quizzes SET message_id = ? WHERE id = ?")
+    ) -> Result<bool, sqlx::Error> {
+        let updated = sqlx::query("UPDATE quizzes SET message_id = ? WHERE id = ?")
             .bind(message_id)
             .bind(quiz_id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(updated.rows_affected() > 0)
     }
 
     /// Removes a quiz that was never answered; a recorded answer is history

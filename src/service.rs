@@ -21,6 +21,8 @@ use crate::{
 pub enum SendError {
     /// The user blocked the bot or deleted the chat.
     Blocked,
+    /// Telegram refused this message for good, so repeating it cannot help.
+    Rejected(String),
     Other(String),
 }
 
@@ -213,7 +215,7 @@ impl<S: QuizSender> QuizService<S> {
             .await
         {
             Ok(message_id) => {
-                self.storage.set_quiz_message(open.id, message_id).await?;
+                self.store_message(user, open.id, message_id).await?;
                 if let Some(old_message) = open.message_id {
                     self.sender.clear_keyboard(user, old_message).await;
                 }
@@ -256,7 +258,7 @@ impl<S: QuizSender> QuizService<S> {
             .await;
         match sent {
             Ok(message_id) => {
-                self.storage.set_quiz_message(quiz_id, message_id).await?;
+                self.store_message(user, quiz_id, message_id).await?;
                 Ok(DispatchOutcome::Sent)
             }
             Err(error) => {
@@ -264,6 +266,20 @@ impl<S: QuizSender> QuizService<S> {
                 self.handle_send_error(user, error, now).await
             }
         }
+    }
+
+    /// A quiz cancelled while its send was in flight has no row to hold the
+    /// message, so nothing else would ever remove these buttons.
+    async fn store_message(
+        &self,
+        user: UserId,
+        quiz: QuizId,
+        message: MessageId,
+    ) -> Result<(), sqlx::Error> {
+        if !self.storage.set_quiz_message(quiz, message).await? {
+            self.sender.clear_keyboard(user, message).await;
+        }
+        Ok(())
     }
 
     /// The cheap SQL check goes first: when no collection can supply enough
@@ -297,6 +313,13 @@ impl<S: QuizSender> QuizService<S> {
                 tracing::info!(%user, "user blocked the bot, pausing quizzes");
                 self.storage.set_paused(user, true, now).await?;
                 Ok(DispatchOutcome::Blocked)
+            }
+            // The user stays due otherwise, and every tick would fail the same
+            // way.
+            SendError::Rejected(message) => {
+                tracing::warn!(%user, %message, "telegram rejected quiz, postponing user");
+                self.storage.postpone_user(user, now).await?;
+                Ok(DispatchOutcome::Failed)
             }
             SendError::Other(message) => {
                 tracing::warn!(%user, %message, "sending quiz failed");
