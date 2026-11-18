@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_options_are_a_decode_error() {
+    async fn malformed_options_are_decode_error() {
         let f = fixture().await;
         sqlx::query(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \

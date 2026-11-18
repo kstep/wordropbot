@@ -21,13 +21,13 @@ pub enum Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("text is not a command")]
-pub struct NotACommand;
+pub struct NotCommand;
 
 impl FromStr for Command {
-    type Err = NotACommand;
+    type Err = NotCommand;
 
-    fn from_str(text: &str) -> Result<Command, NotACommand> {
-        let body = text.trim().strip_prefix('/').ok_or(NotACommand)?;
+    fn from_str(text: &str) -> Result<Command, NotCommand> {
+        let body = text.trim().strip_prefix('/').ok_or(NotCommand)?;
         let (head, arg) = match body.split_once(char::is_whitespace) {
             Some((head, arg)) => (head, arg.trim()),
             None => (body, ""),
@@ -75,7 +75,7 @@ fn collection(arg: &str) -> Command {
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> Result<Command, NotACommand> {
+    fn parse(text: &str) -> Result<Command, NotCommand> {
         text.parse::<Command>()
     }
 
@@ -107,8 +107,8 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_is_not_a_command() {
-        assert_eq!(parse("σπίτι дом"), Err(NotACommand));
+    fn plain_text_is_not_command() {
+        assert_eq!(parse("σπίτι дом"), Err(NotCommand));
     }
 
     #[test]

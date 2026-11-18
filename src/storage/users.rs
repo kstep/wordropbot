@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resuming_unknown_user_is_a_noop() {
+    async fn resuming_unknown_user_is_noop() {
         let s = Storage::in_memory().await;
         assert!(!s.set_paused(uid(9), false, ts(0)).await.unwrap());
         assert!(s.get_user(uid(9)).await.unwrap().is_none());

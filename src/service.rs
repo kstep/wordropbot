@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn distractors_come_from_the_same_collection() {
+    fn distractors_come_from_same_collection() {
         let cands = [
             candidate(1, 10, "a", "aa"),
             candidate(2, 10, "b", "bb"),
