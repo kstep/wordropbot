@@ -1,9 +1,11 @@
+use std::io::{IsTerminal, stdout};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use wordropbot::bot::BotApp;
@@ -13,30 +15,19 @@ use wordropbot::storage::Storage;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONFIG: &str = "config.toml";
 
+#[derive(Parser)]
 struct Args {
+    /// Path to the TOML config file.
+    #[arg(long, default_value = DEFAULT_CONFIG)]
     config: PathBuf,
-}
-
-impl Args {
-    /// Accepts `--config <path>`; everything else is an error.
-    fn parse(mut args: impl Iterator<Item = String>) -> anyhow::Result<Args> {
-        let mut config = PathBuf::from(DEFAULT_CONFIG);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--config" => {
-                    config = args.next().context("--config needs a path")?.into();
-                }
-                other => bail!("unknown argument {other}; usage: wordropbot [--config <path>]"),
-            }
-        }
-        Ok(Args { config })
-    }
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
-        .with_writer(std::io::stdout)
+        .with_writer(stdout)
+        // journald would show escape codes literally.
+        .with_ansi(stdout().is_terminal())
         .init();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
@@ -48,7 +39,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let args = Args::parse(std::env::args().skip(1))?;
+    let args = Args::parse();
     let config = Arc::new(Config::load(&args.config)?);
     let storage = Storage::connect(&config.database.path)
         .await
@@ -131,8 +122,8 @@ async fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> anyhow::Result<Args> {
-        Args::parse(args.iter().map(|s| s.to_string()))
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("wordropbot").chain(args.iter().copied()))
     }
 
     #[test]

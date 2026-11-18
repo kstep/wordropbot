@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::Deserialize;
 
@@ -134,8 +135,10 @@ pub struct Config {
     pub limits: LimitsConfig,
 }
 
-impl Config {
-    pub fn parse(text: &str) -> Result<Config, ConfigError> {
+impl FromStr for Config {
+    type Err = ConfigError;
+
+    fn from_str(text: &str) -> Result<Config, ConfigError> {
         let c: Config = toml::from_str(text).map_err(|e| ConfigError::Parse {
             message: e.message().to_owned(),
             line: e
@@ -145,13 +148,15 @@ impl Config {
         c.validate()?;
         Ok(c)
     }
+}
 
+impl Config {
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_owned(),
             source,
         })?;
-        Self::parse(&text)
+        text.parse()
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -162,19 +167,19 @@ impl Config {
                 "telegram.token must not be empty",
             ),
             (
-                s.half_life_days > 0.0,
+                s.half_life_days.is_finite() && s.half_life_days > 0.0,
                 "selection.half_life_days must be > 0",
             ),
             (
-                (0.0..=1.0).contains(&s.prior_error),
+                s.prior_error.is_finite() && (0.0..=1.0).contains(&s.prior_error),
                 "selection.prior_error must be in 0..=1",
             ),
             (
-                s.prior_strength > 0.0,
+                s.prior_strength.is_finite() && s.prior_strength > 0.0,
                 "selection.prior_strength must be > 0",
             ),
             (
-                s.min_weight > 0.0 && s.min_weight <= 1.0,
+                s.min_weight.is_finite() && s.min_weight > 0.0 && s.min_weight <= 1.0,
                 "selection.min_weight must be in (0, 1]",
             ),
             (
@@ -200,7 +205,7 @@ impl Config {
 #[cfg(test)]
 impl Config {
     pub fn for_tests() -> Config {
-        Config::parse(tests::VALID).expect("VALID config parses")
+        tests::VALID.parse().expect("VALID config parses")
     }
 }
 
@@ -236,7 +241,9 @@ join_attempts_per_minute = 5
 
     #[test]
     fn example_config_is_valid() {
-        let c = Config::parse(include_str!("../deploy/config.example.toml")).unwrap();
+        let c: Config = include_str!("../deploy/config.example.toml")
+            .parse()
+            .unwrap();
         assert_eq!(
             c.database.path,
             Path::new("/var/lib/wordropbot/wordropbot.db")
@@ -245,7 +252,7 @@ join_attempts_per_minute = 5
 
     #[test]
     fn parses_valid() {
-        let c = Config::parse(VALID).unwrap();
+        let c: Config = VALID.parse().unwrap();
         assert_eq!(c.quiz.options, 3);
         assert_eq!(c.schedule.default_period.as_secs(), 86400);
         assert_eq!(c.schedule.min_period.as_secs(), 60);
@@ -253,7 +260,11 @@ join_attempts_per_minute = 5
 
     #[test]
     fn ignores_unknown_keys() {
-        assert!(Config::parse(&format!("{VALID}\n[extra]\nfoo = 1\n")).is_ok());
+        assert!(
+            format!("{VALID}\n[extra]\nfoo = 1\n")
+                .parse::<Config>()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -266,13 +277,17 @@ join_attempts_per_minute = 5
             ("min_weight = 0.05", "min_weight = 1.5"),
             ("options = 3", "options = 1"),
             ("options = 3", "options = 9"),
+            ("prior_strength = 1.0", "prior_strength = inf"),
+            ("half_life_days = 14.0", "half_life_days = inf"),
+            ("half_life_days = 14.0", "half_life_days = nan"),
+            ("prior_error = 0.5", "prior_error = nan"),
             ("tick_seconds = 30", "tick_seconds = 0"),
             ("default_period = \"1d\"", "default_period = \"soon\""),
             ("default_period = \"1d\"", "default_period = \"30s\""),
             ("token = \"PUT_BOT_TOKEN_HERE\"", "token = \"\""),
         ] {
             assert!(VALID.contains(from), "{from}");
-            assert!(Config::parse(&VALID.replace(from, to)).is_err(), "{to}");
+            assert!(VALID.replace(from, to).parse::<Config>().is_err(), "{to}");
         }
     }
 
@@ -280,7 +295,7 @@ join_attempts_per_minute = 5
 
     #[test]
     fn token_only_config_uses_defaults() {
-        let c = Config::parse(TOKEN_ONLY).unwrap();
+        let c: Config = TOKEN_ONLY.parse().unwrap();
         assert_eq!(c.database.path, Path::new("wordropbot.db"));
         assert_eq!(c.selection.half_life_days, 14.0);
         assert_eq!(c.selection.prior_error, 0.5);
@@ -297,26 +312,30 @@ join_attempts_per_minute = 5
 
     #[test]
     fn partial_section_keeps_other_defaults() {
-        let c = Config::parse(&format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")).unwrap();
+        let c: Config = format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")
+            .parse()
+            .unwrap();
         assert_eq!(c.selection.min_weight, 0.1);
         assert_eq!(c.selection.half_life_days, 14.0);
     }
 
     #[test]
     fn missing_token_is_rejected() {
-        assert!(Config::parse("").is_err());
-        assert!(Config::parse("[quiz]\noptions = 4\n").is_err());
+        assert!("".parse::<Config>().is_err());
+        assert!("[quiz]\noptions = 4\n".parse::<Config>().is_err());
     }
 
     #[test]
     fn defaults_are_still_validated() {
         let text = format!("{TOKEN_ONLY}[schedule]\nmin_period = \"2d\"\n");
-        assert!(Config::parse(&text).is_err());
+        assert!(text.parse::<Config>().is_err());
     }
 
     #[test]
     fn parse_error_does_not_quote_source() {
-        let error = Config::parse("[telegram]\ntoken = sEcReT\n").unwrap_err();
+        let error = "[telegram]\ntoken = sEcReT\n"
+            .parse::<Config>()
+            .unwrap_err();
         assert!(!error.to_string().contains("sEcReT"), "{error}");
         assert!(
             matches!(error, ConfigError::Parse { line: Some(2), .. }),
@@ -326,7 +345,7 @@ join_attempts_per_minute = 5
 
     #[test]
     fn debug_output_hides_token() {
-        let c = Config::parse(VALID).unwrap();
+        let c: Config = VALID.parse().unwrap();
         assert!(!format!("{c:?}").contains("PUT_BOT_TOKEN_HERE"));
     }
 }
