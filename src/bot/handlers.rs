@@ -28,7 +28,7 @@ use crate::{
     import::ParseReport,
     period::Period,
     service::{DispatchOutcome, QuizService},
-    storage::{CollectionSummary, ImportSummary, Storage},
+    storage::{CollectionSummary, Storage},
     time::Timestamp,
 };
 
@@ -302,14 +302,7 @@ impl Handlers {
             return self.no_collection(user).await;
         };
         let report = ParseReport::parse(text, &self.config.limits);
-        let summary = if report.pairs.is_empty() {
-            ImportSummary {
-                added: 0,
-                updated: 0,
-            }
-        } else {
-            self.storage.import_pairs(collection, &report.pairs).await?
-        };
+        let summary = self.storage.import_pairs(collection, &report.pairs).await?;
         let mut reply = ImportReport {
             summary: &summary,
             bad_lines: &report.bad_lines,
@@ -534,12 +527,6 @@ impl Handlers {
     }
 
     async fn words_page(&self, press: Press, page: i64) -> Reply<Notice> {
-        let Some(collection) = self.active_collection(press.user).await? else {
-            return Ok(Some("Активной коллекции нет."));
-        };
-        if !self.storage.is_member(press.user, collection).await? {
-            return Ok(Some("Ты не участник этой коллекции."));
-        }
         match self.words_view(press.user, page).await? {
             Some(view) => self.edit(press, view.text, view.keyboard).await?,
             None => return Ok(Some("Активной коллекции нет.")),

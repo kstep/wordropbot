@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
-use super::{Storage, collections::CancelledQuiz};
+use sqlx::SqliteExecutor;
+
+use super::{Storage, collections::CancelledQuiz, quizzes::QuizScope};
 use crate::{
-    ids::{CollectionId, MessageId, UserId, WordId},
+    ids::{CollectionId, UserId, WordId},
     import::{Normalized, ParsedPair},
     time::Timestamp,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ImportSummary {
     pub added: u32,
     pub updated: u32,
@@ -29,17 +31,21 @@ impl Storage {
         collection_id: CollectionId,
         pairs: &[ParsedPair],
     ) -> Result<ImportSummary, sqlx::Error> {
+        if pairs.is_empty() {
+            return Ok(ImportSummary::default());
+        }
         let mut transaction = self.begin_write().await?;
         let mut created = HashSet::new();
         let mut updated = HashSet::new();
         for pair in pairs {
+            let term_norm = Normalized::new(&pair.term);
             let inserted: Option<WordId> = sqlx::query_scalar(
                 "INSERT INTO words (collection_id, term, term_norm) VALUES (?, ?, ?) \
                  ON CONFLICT(collection_id, term_norm) DO NOTHING RETURNING id",
             )
             .bind(collection_id)
             .bind(&pair.term)
-            .bind(Normalized::new(&pair.term).as_str())
+            .bind(term_norm.as_str())
             .fetch_optional(&mut *transaction)
             .await?;
             let word_id = match inserted {
@@ -52,7 +58,7 @@ impl Storage {
                         "SELECT id FROM words WHERE collection_id = ? AND term_norm = ?",
                     )
                     .bind(collection_id)
-                    .bind(Normalized::new(&pair.term).as_str())
+                    .bind(term_norm.as_str())
                     .fetch_one(&mut *transaction)
                     .await?
                 }
@@ -137,16 +143,23 @@ impl Storage {
         let Some((id, term)) = word else {
             return Ok(None);
         };
-        let translations =
-            sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
-                .bind(id)
-                .fetch_all(&self.pool)
-                .await?;
+        let translations = Self::word_translations(&self.pool, id).await?;
         Ok(Some(WordView {
             id,
             term,
             translations,
         }))
+    }
+
+    /// Translations of the word in insertion order.
+    pub(super) async fn word_translations<'e>(
+        executor: impl SqliteExecutor<'e>,
+        word_id: WordId,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
+            .bind(word_id)
+            .fetch_all(executor)
+            .await
     }
 
     /// Deletes the word for all members. Returns `None` if the word does not
@@ -159,40 +172,25 @@ impl Storage {
         now: Timestamp,
     ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
-        let allowed: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM words w \
-             JOIN memberships m ON m.collection_id = w.collection_id \
-             WHERE w.id = ? AND m.user_id = ?)",
-        )
-        .bind(word_id)
-        .bind(user_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        if !allowed {
+        let collection_id: Option<CollectionId> =
+            sqlx::query_scalar("SELECT collection_id FROM words WHERE id = ?")
+                .bind(word_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some(collection_id) = collection_id else {
+            return Ok(None);
+        };
+        if !Self::is_member(&mut *transaction, user_id, collection_id).await? {
             return Ok(None);
         }
-        let open: Vec<(UserId, Option<MessageId>)> = sqlx::query_as(
-            "SELECT user_id, message_id FROM quizzes WHERE word_id = ? AND answered_at IS NULL",
-        )
-        .bind(word_id)
-        .fetch_all(&mut *transaction)
-        .await?;
-        for &(owner, _) in &open {
-            Storage::reschedule(&mut transaction, owner, now).await?;
-        }
+        let cancelled =
+            Self::cancel_open_quizzes(&mut transaction, QuizScope::Word(word_id), now).await?;
         sqlx::query("DELETE FROM words WHERE id = ?")
             .bind(word_id)
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
-        Ok(Some(
-            open.into_iter()
-                .map(|(user_id, message_id)| CancelledQuiz {
-                    user_id,
-                    message_id,
-                })
-                .collect(),
-        ))
+        Ok(Some(cancelled))
     }
 }
 

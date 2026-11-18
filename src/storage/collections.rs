@@ -1,20 +1,20 @@
-use sqlx::{Row, sqlite::SqliteRow};
+use sqlx::{SqliteConnection, SqliteExecutor};
 
-use super::Storage;
+use super::{Storage, quizzes::QuizScope};
 use crate::{
     code::Code,
     ids::{CollectionId, MessageId, UserId},
     time::Timestamp,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Collection {
     pub id: CollectionId,
     pub code: Code,
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct CollectionSummary {
     pub id: CollectionId,
     pub code: Code,
@@ -23,29 +23,7 @@ pub struct CollectionSummary {
     pub is_active: bool,
 }
 
-impl<'r> sqlx::FromRow<'r, SqliteRow> for Collection {
-    fn from_row(row: &'r SqliteRow) -> Result<Collection, sqlx::Error> {
-        Ok(Collection {
-            id: row.try_get("id")?,
-            code: row.try_get("code")?,
-            name: row.try_get("name")?,
-        })
-    }
-}
-
-impl<'r> sqlx::FromRow<'r, SqliteRow> for CollectionSummary {
-    fn from_row(row: &'r SqliteRow) -> Result<CollectionSummary, sqlx::Error> {
-        Ok(CollectionSummary {
-            id: row.try_get("id")?,
-            code: row.try_get("code")?,
-            name: row.try_get("name")?,
-            word_count: row.try_get("word_count")?,
-            is_active: row.try_get("is_active")?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct CancelledQuiz {
     pub user_id: UserId,
     pub message_id: Option<MessageId>,
@@ -119,8 +97,8 @@ impl Storage {
         .await
     }
 
-    pub async fn is_member(
-        &self,
+    pub(super) async fn is_member<'e>(
+        executor: impl SqliteExecutor<'e>,
         user_id: UserId,
         collection_id: CollectionId,
     ) -> Result<bool, sqlx::Error> {
@@ -129,7 +107,7 @@ impl Storage {
         )
         .bind(user_id)
         .bind(collection_id)
-        .fetch_one(&self.pool)
+        .fetch_one(executor)
         .await
     }
 
@@ -160,29 +138,18 @@ impl Storage {
         now: Timestamp,
     ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
-        let member: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM memberships WHERE user_id = ? AND collection_id = ?)",
-        )
-        .bind(user_id)
-        .bind(collection_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        if !member {
+        if !Self::is_member(&mut *transaction, user_id, collection_id).await? {
             return Ok(None);
         }
-
-        let cancelled: Vec<(UserId, Option<MessageId>)> = sqlx::query_as(
-            "DELETE FROM quizzes WHERE user_id = ?1 AND answered_at IS NULL \
-             AND word_id IN (SELECT id FROM words WHERE collection_id = ?2) \
-             RETURNING user_id, message_id",
+        let cancelled = Self::cancel_open_quizzes(
+            &mut transaction,
+            QuizScope::UserInCollection {
+                user_id,
+                collection_id,
+            },
+            now,
         )
-        .bind(user_id)
-        .bind(collection_id)
-        .fetch_all(&mut *transaction)
         .await?;
-        if !cancelled.is_empty() {
-            Storage::reschedule(&mut transaction, user_id, now).await?;
-        }
         sqlx::query(
             "UPDATE users SET active_collection_id = NULL WHERE id = ? AND active_collection_id = ?",
         )
@@ -203,19 +170,11 @@ impl Storage {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        Ok(Some(
-            cancelled
-                .into_iter()
-                .map(|(user_id, message_id)| CancelledQuiz {
-                    user_id,
-                    message_id,
-                })
-                .collect(),
-        ))
+        Ok(Some(cancelled))
     }
 
     async fn add_membership_and_activate(
-        transaction: &mut sqlx::SqliteConnection,
+        transaction: &mut SqliteConnection,
         user_id: UserId,
         collection_id: CollectionId,
         now: Timestamp,

@@ -51,3 +51,4 @@ CREATE TABLE quizzes (
 );
 CREATE UNIQUE INDEX quizzes_one_open ON quizzes(user_id) WHERE answered_at IS NULL;
 CREATE INDEX quizzes_user_word ON quizzes(user_id, word_id);
+CREATE INDEX quizzes_word ON quizzes(word_id);

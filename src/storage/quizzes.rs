@@ -1,8 +1,8 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
-use sqlx::{Row, sqlite::SqliteRow};
+use sqlx::{Row, SqliteConnection, sqlite::SqliteRow, types::Json};
 
-use super::{CancelledQuiz, Storage, StoredValueError};
+use super::{CancelledQuiz, Storage};
 use crate::{
     config::SelectionConfig,
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
@@ -57,27 +57,51 @@ pub struct HardWord {
     pub error_rate: f64,
 }
 
-/// Answer options as stored: a JSON array of strings.
-struct StoredOptions(Vec<String>);
+/// Which open quizzes a cancellation removes.
+pub(super) enum QuizScope {
+    /// The user's open quiz, whatever its word.
+    User(UserId),
+    /// The user's open quiz if its word belongs to the collection.
+    UserInCollection {
+        user_id: UserId,
+        collection_id: CollectionId,
+    },
+    /// Open quizzes of every user on this word.
+    Word(WordId),
+}
 
-impl FromStr for StoredOptions {
-    type Err = serde_json::Error;
+impl QuizScope {
+    fn user_id(&self) -> Option<UserId> {
+        match *self {
+            QuizScope::User(user_id) | QuizScope::UserInCollection { user_id, .. } => Some(user_id),
+            QuizScope::Word(_) => None,
+        }
+    }
 
-    fn from_str(raw: &str) -> Result<StoredOptions, serde_json::Error> {
-        serde_json::from_str(raw).map(StoredOptions)
+    fn collection_id(&self) -> Option<CollectionId> {
+        match *self {
+            QuizScope::UserInCollection { collection_id, .. } => Some(collection_id),
+            _ => None,
+        }
+    }
+
+    fn word_id(&self) -> Option<WordId> {
+        match *self {
+            QuizScope::Word(word_id) => Some(word_id),
+            _ => None,
+        }
     }
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     fn from_row(row: &'r SqliteRow) -> Result<OpenQuiz, sqlx::Error> {
         let index: u32 = row.try_get("correct_index")?;
-        let options: String = row.try_get("options")?;
-        let StoredOptions(options) = options.parse().map_err(StoredValueError::new)?;
+        let options: Json<Vec<String>> = row.try_get("options")?;
         Ok(OpenQuiz {
             id: row.try_get("id")?,
             word_id: row.try_get("word_id")?,
             term: row.try_get("term")?,
-            options,
+            options: options.0,
             correct_index: index as usize,
             message_id: row.try_get("message_id")?,
         })
@@ -176,14 +200,13 @@ impl Storage {
         correct_index: usize,
         now: Timestamp,
     ) -> Result<Option<QuizId>, sqlx::Error> {
-        let options = serde_json::to_string(options).map_err(StoredValueError::new)?;
         sqlx::query_scalar(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
              VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
         )
         .bind(user_id)
         .bind(word_id)
-        .bind(options)
+        .bind(Json(options))
         .bind(correct_index as i64)
         .bind(now)
         .fetch_optional(&self.pool)
@@ -232,7 +255,7 @@ impl Storage {
         now: Timestamp,
     ) -> Result<AnswerOutcome, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
-        let row: Option<(WordId, String, i64)> = sqlx::query_as(
+        let row: Option<(WordId, Json<Vec<String>>, i64)> = sqlx::query_as(
             "SELECT word_id, options, correct_index FROM quizzes \
              WHERE id = ? AND user_id = ? AND answered_at IS NULL",
         )
@@ -243,7 +266,7 @@ impl Storage {
         let Some((word_id, options, correct_index)) = row else {
             return Ok(AnswerOutcome::Closed);
         };
-        let StoredOptions(mut options) = options.parse().map_err(StoredValueError::new)?;
+        let mut options = options.0;
         if chosen_index >= options.len() {
             return Ok(AnswerOutcome::Closed);
         }
@@ -267,11 +290,7 @@ impl Storage {
             .bind(word_id)
             .fetch_one(&mut *transaction)
             .await?;
-        let translations: Vec<String> =
-            sqlx::query_scalar("SELECT text FROM translations WHERE word_id = ? ORDER BY id")
-                .bind(word_id)
-                .fetch_all(&mut *transaction)
-                .await?;
+        let translations = Self::word_translations(&mut *transaction, word_id).await?;
         transaction.commit().await?;
         Ok(AnswerOutcome::Answered {
             is_correct,
@@ -289,22 +308,35 @@ impl Storage {
         now: Timestamp,
     ) -> Result<Option<CancelledQuiz>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
-        let deleted: Option<(UserId, Option<MessageId>)> = sqlx::query_as(
-            "DELETE FROM quizzes WHERE user_id = ? AND answered_at IS NULL \
+        let cancelled =
+            Self::cancel_open_quizzes(&mut transaction, QuizScope::User(user_id), now).await?;
+        transaction.commit().await?;
+        Ok(cancelled.into_iter().next())
+    }
+
+    /// Deletes the open quizzes in scope and schedules each owner one period
+    /// from `now`. The caller commits.
+    pub(super) async fn cancel_open_quizzes(
+        transaction: &mut SqliteConnection,
+        scope: QuizScope,
+        now: Timestamp,
+    ) -> Result<Vec<CancelledQuiz>, sqlx::Error> {
+        let cancelled: Vec<CancelledQuiz> = sqlx::query_as(
+            "DELETE FROM quizzes WHERE answered_at IS NULL \
+             AND (?1 IS NULL OR user_id = ?1) \
+             AND (?2 IS NULL OR word_id IN (SELECT id FROM words WHERE collection_id = ?2)) \
+             AND (?3 IS NULL OR word_id = ?3) \
              RETURNING user_id, message_id",
         )
-        .bind(user_id)
-        .fetch_optional(&mut *transaction)
+        .bind(scope.user_id())
+        .bind(scope.collection_id())
+        .bind(scope.word_id())
+        .fetch_all(&mut *transaction)
         .await?;
-        let Some((user_id, message_id)) = deleted else {
-            return Ok(None);
-        };
-        Storage::reschedule(&mut transaction, user_id, now).await?;
-        transaction.commit().await?;
-        Ok(Some(CancelledQuiz {
-            user_id,
-            message_id,
-        }))
+        for quiz in &cancelled {
+            Self::reschedule(&mut *transaction, quiz.user_id, now).await?;
+        }
+        Ok(cancelled)
     }
 
     /// Drops quizzes that were created but never sent, e.g. after a crash.
@@ -323,11 +355,7 @@ impl Storage {
         now: Timestamp,
         selection: &SelectionConfig,
     ) -> Result<CollectionStats, sqlx::Error> {
-        let word_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
-                .bind(collection_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let word_count = self.count_words(collection_id).await?;
         let loaded = self.load_candidates(user_id, Some(collection_id)).await?;
         let (mut answered, mut correct) = (0, 0);
         let mut ranked: Vec<(f64, String, String)> = Vec::new();
@@ -803,7 +831,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             fixture.storage.open_quiz(uid(1)).await,
-            Err(Error::Decode(_))
+            Err(Error::ColumnDecode { .. })
         ));
     }
 

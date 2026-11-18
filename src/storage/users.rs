@@ -1,4 +1,4 @@
-use sqlx::{Row, sqlite::SqliteRow};
+use sqlx::SqliteConnection;
 
 use super::Storage;
 use crate::{
@@ -7,25 +7,14 @@ use crate::{
     time::Timestamp,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct User {
     pub id: UserId,
+    #[sqlx(rename = "period_secs")]
     pub period: Period,
     pub paused: bool,
     pub next_quiz_at: Timestamp,
     pub active_collection_id: Option<CollectionId>,
-}
-
-impl<'r> sqlx::FromRow<'r, SqliteRow> for User {
-    fn from_row(row: &'r SqliteRow) -> Result<User, sqlx::Error> {
-        Ok(User {
-            id: row.try_get("id")?,
-            period: row.try_get("period_secs")?,
-            paused: row.try_get("paused")?,
-            next_quiz_at: row.try_get("next_quiz_at")?,
-            active_collection_id: row.try_get("active_collection_id")?,
-        })
-    }
 }
 
 impl Storage {
@@ -110,18 +99,18 @@ impl Storage {
     /// transaction so the period read and the update cannot interleave with
     /// another writer.
     pub(super) async fn reschedule(
-        transaction: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        transaction: &mut SqliteConnection,
         user_id: UserId,
         now: Timestamp,
     ) -> Result<(), sqlx::Error> {
         let period: Period = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
             .bind(user_id)
-            .fetch_one(&mut **transaction)
+            .fetch_one(&mut *transaction)
             .await?;
         sqlx::query("UPDATE users SET next_quiz_at = ? WHERE id = ?")
             .bind(now + period)
             .bind(user_id)
-            .execute(&mut **transaction)
+            .execute(&mut *transaction)
             .await?;
         Ok(())
     }
@@ -138,7 +127,7 @@ impl Storage {
     }
 
     async fn has_open_quiz(
-        transaction: &mut sqlx::SqliteConnection,
+        transaction: &mut SqliteConnection,
         user_id: UserId,
     ) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar(

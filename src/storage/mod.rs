@@ -3,12 +3,12 @@ mod quizzes;
 mod users;
 mod words;
 
-use std::{error::Error, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 pub use collections::{CancelledQuiz, Collection, CollectionSummary};
 pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, HardWord, OpenQuiz};
 use sqlx::{
-    SqlitePool,
+    Sqlite, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 pub use users::User;
@@ -39,7 +39,7 @@ impl Storage {
     /// Takes the write lock up front: a deferred transaction that reads and
     /// then writes fails with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` does
     /// not retry.
-    async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+    async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
         self.pool.begin_with("BEGIN IMMEDIATE").await
     }
 
@@ -58,22 +58,6 @@ impl Storage {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         Storage { pool }
-    }
-}
-
-/// A stored value that violates a domain invariant, reported as a decode error.
-#[derive(Debug)]
-struct StoredValueError(Box<dyn Error + Send + Sync>);
-
-impl StoredValueError {
-    fn new<E: Error + Send + Sync + 'static>(source: E) -> StoredValueError {
-        StoredValueError(Box::new(source))
-    }
-}
-
-impl From<StoredValueError> for sqlx::Error {
-    fn from(error: StoredValueError) -> sqlx::Error {
-        Self::Decode(error.0)
     }
 }
 
