@@ -96,6 +96,7 @@ impl View {
 pub struct Handlers {
     bot: TelegramBot,
     storage: Storage,
+    sender: TelegramSender,
     service: QuizService<TelegramSender>,
     config: Arc<Config>,
     limiter: Mutex<JoinLimiter>,
@@ -103,15 +104,13 @@ pub struct Handlers {
 
 impl Handlers {
     pub fn new(bot: TelegramBot, storage: Storage, config: Arc<Config>) -> Handlers {
-        let service = QuizService::new(
-            storage.clone(),
-            TelegramSender::new(bot.clone()),
-            config.clone(),
-        );
+        let sender = TelegramSender::new(bot.clone());
+        let service = QuizService::new(storage.clone(), sender.clone(), config.clone());
         let limiter = Mutex::new(JoinLimiter::new(config.limits.join_attempts_per_minute));
         Handlers {
             bot,
             storage,
+            sender,
             service,
             config,
             limiter,
@@ -406,13 +405,10 @@ impl Handlers {
     async fn quiz(&self, user: UserId) -> Reply {
         if let Some(open) = self.storage.open_quiz(user).await? {
             let sent = self
-                .bot
-                .send_message(ChatId(user.0), open.term)
-                .reply_markup(TelegramSender::keyboard(open.id, &open.options))
+                .sender
+                .send(user, open.id, &open.term, &open.options)
                 .await?;
-            self.storage
-                .set_quiz_message(open.id, MessageId(sent.id.0))
-                .await?;
+            self.storage.set_quiz_message(open.id, sent).await?;
             self.drop_keyboard(user, open.message_id).await;
             return Ok(());
         }
@@ -488,7 +484,7 @@ impl Handlers {
             Self::button("Отмена", CallbackAction::Dismiss),
         ]]);
         self.bot
-            .send_message(ChatId(press.user.0), text)
+            .send_message(ChatId::from(press.user), text)
             .reply_markup(keyboard)
             .await?;
         Ok(None)
@@ -542,7 +538,7 @@ impl Handlers {
         // Deleting is cosmetic: a failure only leaves the stale buttons in place.
         let _ = self
             .bot
-            .delete_message(ChatId(press.user.0), press.message)
+            .delete_message(ChatId::from(press.user), press.message)
             .await;
         Ok(Some("Отменено."))
     }
@@ -617,7 +613,7 @@ impl Handlers {
         text: impl Into<String>,
         keyboard: Option<InlineKeyboardMarkup>,
     ) -> Reply {
-        let request = self.bot.send_message(ChatId(user.0), text);
+        let request = self.bot.send_message(ChatId::from(user), text);
         match keyboard {
             Some(keyboard) => request.reply_markup(keyboard).await?,
             None => request.await?,
@@ -647,7 +643,7 @@ impl Handlers {
     ) -> Reply {
         let request = self
             .bot
-            .edit_message_text(ChatId(press.user.0), press.message, text);
+            .edit_message_text(ChatId::from(press.user), press.message, text);
         let result = match keyboard {
             Some(keyboard) => request.reply_markup(keyboard).await,
             None => request.await,
@@ -664,7 +660,7 @@ impl Handlers {
         let Some(message) = message else { return };
         let _ = self
             .bot
-            .edit_message_reply_markup(ChatId(user.0), TgMessageId(message.0))
+            .edit_message_reply_markup(ChatId::from(user), TgMessageId(message.0))
             .await;
     }
 }

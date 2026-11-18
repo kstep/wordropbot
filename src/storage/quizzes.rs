@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::{CancelledQuiz, Storage, decode_err};
+use super::{CancelledQuiz, Storage, StoredValueError};
 use crate::config::SelectionConfig;
 use crate::ids::{CollectionId, MessageId, QuizId, UserId, WordId};
 use crate::selection::AnswerRecord;
@@ -56,24 +57,28 @@ pub struct HardWord {
     pub error_rate: f64,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("stored quiz index {0} is out of range")]
-struct BadStoredIndex(i64);
+/// Answer options as stored: a JSON array of strings.
+struct StoredOptions(Vec<String>);
 
-fn parse_options(raw: &str) -> Result<Vec<String>, sqlx::Error> {
-    serde_json::from_str(raw).map_err(decode_err)
+impl FromStr for StoredOptions {
+    type Err = serde_json::Error;
+
+    fn from_str(raw: &str) -> Result<StoredOptions, serde_json::Error> {
+        serde_json::from_str(raw).map(StoredOptions)
+    }
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     fn from_row(row: &'r SqliteRow) -> Result<OpenQuiz, sqlx::Error> {
-        let index: i64 = row.try_get("correct_index")?;
+        let index: u32 = row.try_get("correct_index")?;
         let options: String = row.try_get("options")?;
+        let StoredOptions(options) = options.parse().map_err(StoredValueError::new)?;
         Ok(OpenQuiz {
             id: row.try_get("id")?,
             word_id: row.try_get("word_id")?,
             term: row.try_get("term")?,
-            options: parse_options(&options)?,
-            correct_index: usize::try_from(index).map_err(|_| decode_err(BadStoredIndex(index)))?,
+            options,
+            correct_index: index as usize,
             message_id: row.try_get("message_id")?,
         })
     }
@@ -170,7 +175,7 @@ impl Storage {
         correct_index: usize,
         now: Timestamp,
     ) -> Result<Option<QuizId>, sqlx::Error> {
-        let options = serde_json::to_string(options).map_err(decode_err)?;
+        let options = serde_json::to_string(options).map_err(StoredValueError::new)?;
         sqlx::query_scalar(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
              VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
@@ -236,7 +241,7 @@ impl Storage {
         let Some((word_id, options, correct_index)) = row else {
             return Ok(AnswerOutcome::Closed);
         };
-        let mut options = parse_options(&options)?;
+        let StoredOptions(mut options) = options.parse().map_err(StoredValueError::new)?;
         if chosen_index >= options.len() {
             return Ok(AnswerOutcome::Closed);
         }
@@ -323,15 +328,24 @@ impl Storage {
         let loaded = self.load_candidates(user_id, Some(collection_id)).await?;
         let (mut answered, mut correct) = (0, 0);
         let mut ranked: Vec<(f64, String, String)> = Vec::new();
-        for l in loaded {
-            let answers = &l.candidate.answers;
+        for item in loaded {
+            let answers = &item.candidate.answers;
             answered += answers.len() as i64;
-            correct += answers.iter().filter(|a| a.is_correct).count() as i64;
+            correct += answers.iter().filter(|answer| answer.is_correct).count() as i64;
             if !answers.is_empty() {
-                ranked.push((cfg.error_rate(answers, now), l.term_norm, l.candidate.term));
+                ranked.push((
+                    cfg.error_rate(answers, now),
+                    item.term_norm,
+                    item.candidate.term,
+                ));
             }
         }
-        ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
         ranked.truncate(HARDEST_LIMIT);
         Ok(CollectionStats {
             word_count,

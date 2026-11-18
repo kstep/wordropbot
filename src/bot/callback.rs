@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn roundtrips_within_telegram_limit() {
-        for a in [
+        for action in [
             CallbackAction::Answer {
                 quiz: QuizId(i64::MAX),
                 index: 7,
@@ -80,9 +80,9 @@ mod tests {
             CallbackAction::WordsPage(4),
             CallbackAction::Dismiss,
         ] {
-            let s = a.to_string();
-            assert!(s.len() <= 64, "{s}");
-            assert_eq!(s.parse::<CallbackAction>(), Ok(a));
+            let text = action.to_string();
+            assert!(text.len() <= 64, "{text}");
+            assert_eq!(text.parse::<CallbackAction>(), Ok(action));
         }
     }
 

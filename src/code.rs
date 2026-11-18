@@ -2,6 +2,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use rand::{CryptoRng, Rng};
+use sqlx::error::BoxDynError;
+use sqlx::sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef};
 
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const HALF: usize = 4;
@@ -57,12 +59,30 @@ impl FromStr for Code {
         {
             return Err(ParseCodeError::InvalidCharacter);
         }
-        let (a, b) = chars.split_at(HALF);
+        let (head, tail) = chars.split_at(HALF);
         Ok(Code(format!(
             "{}-{}",
-            a.iter().collect::<String>(),
-            b.iter().collect::<String>()
+            head.iter().collect::<String>(),
+            tail.iter().collect::<String>()
         )))
+    }
+}
+
+impl sqlx::Type<Sqlite> for Code {
+    fn type_info() -> SqliteTypeInfo {
+        <str as sqlx::Type<Sqlite>>::type_info()
+    }
+
+    fn compatible(info: &SqliteTypeInfo) -> bool {
+        <str as sqlx::Type<Sqlite>>::compatible(info)
+    }
+}
+
+/// A stored code in a non-canonical form is a decode error.
+impl<'r> sqlx::Decode<'r, Sqlite> for Code {
+    fn decode(value: SqliteValueRef<'r>) -> Result<Code, BoxDynError> {
+        let raw = <&str as sqlx::Decode<Sqlite>>::decode(value)?;
+        Ok(raw.parse()?)
     }
 }
 

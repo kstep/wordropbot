@@ -1,7 +1,7 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::{Storage, decode_err};
+use super::Storage;
 use crate::code::Code;
 use crate::ids::{CollectionId, MessageId, UserId};
 use crate::time::Timestamp;
@@ -22,16 +22,11 @@ pub struct CollectionSummary {
     pub is_active: bool,
 }
 
-fn code_column(row: &SqliteRow) -> Result<Code, sqlx::Error> {
-    let raw: String = row.try_get("code")?;
-    raw.parse().map_err(decode_err)
-}
-
 impl<'r> sqlx::FromRow<'r, SqliteRow> for Collection {
     fn from_row(row: &'r SqliteRow) -> Result<Collection, sqlx::Error> {
         Ok(Collection {
             id: row.try_get("id")?,
-            code: code_column(row)?,
+            code: row.try_get("code")?,
             name: row.try_get("name")?,
         })
     }
@@ -41,7 +36,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for CollectionSummary {
     fn from_row(row: &'r SqliteRow) -> Result<CollectionSummary, sqlx::Error> {
         Ok(CollectionSummary {
             id: row.try_get("id")?,
-            code: code_column(row)?,
+            code: row.try_get("code")?,
             name: row.try_get("name")?,
             word_count: row.try_get("word_count")?,
             is_active: row.try_get("is_active")?,
@@ -78,7 +73,7 @@ impl Storage {
         let Some(collection) = collection else {
             return Ok(None);
         };
-        add_membership_and_activate(&mut tx, user_id, collection.id, now).await?;
+        Self::add_membership_and_activate(&mut tx, user_id, collection.id, now).await?;
         tx.commit().await?;
         Ok(Some(collection))
     }
@@ -99,7 +94,7 @@ impl Storage {
         let Some(collection) = collection else {
             return Ok(None);
         };
-        add_membership_and_activate(&mut tx, user_id, collection.id, now).await?;
+        Self::add_membership_and_activate(&mut tx, user_id, collection.id, now).await?;
         tx.commit().await?;
         Ok(Some(collection))
     }
@@ -215,29 +210,29 @@ impl Storage {
                 .collect(),
         ))
     }
-}
 
-async fn add_membership_and_activate(
-    tx: &mut sqlx::SqliteConnection,
-    user_id: UserId,
-    collection_id: CollectionId,
-    now: Timestamp,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO memberships (user_id, collection_id, joined_at) VALUES (?, ?, ?) \
-         ON CONFLICT(user_id, collection_id) DO NOTHING",
-    )
-    .bind(user_id)
-    .bind(collection_id)
-    .bind(now)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("UPDATE users SET active_collection_id = ? WHERE id = ?")
-        .bind(collection_id)
+    async fn add_membership_and_activate(
+        tx: &mut sqlx::SqliteConnection,
+        user_id: UserId,
+        collection_id: CollectionId,
+        now: Timestamp,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO memberships (user_id, collection_id, joined_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id, collection_id) DO NOTHING",
+        )
         .bind(user_id)
+        .bind(collection_id)
+        .bind(now)
         .execute(&mut *tx)
         .await?;
-    Ok(())
+        sqlx::query("UPDATE users SET active_collection_id = ? WHERE id = ?")
+            .bind(collection_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -378,7 +373,7 @@ mod tests {
         s.ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
             .await
             .unwrap();
-        let a = s
+        let first_collection = s
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
             .unwrap()
@@ -397,13 +392,13 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .active_collection_id,
-            Some(a.id)
+            Some(first_collection.id)
         );
         let list = s.list_collections(uid(1)).await.unwrap();
         assert_eq!(list.len(), 2);
         assert!(
             list.iter()
-                .any(|c| c.id == a.id && c.is_active && c.word_count == 0)
+                .any(|c| c.id == first_collection.id && c.is_active && c.word_count == 0)
         );
     }
 
@@ -413,12 +408,12 @@ mod tests {
         s.ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
             .await
             .unwrap();
-        let a = s
+        let first_collection = s
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
             .unwrap()
             .unwrap();
-        let b = s
+        let second_collection = s
             .create_collection(uid(1), "B", &code("AAAA-AAAA"), ts(0))
             .await
             .unwrap()
@@ -426,7 +421,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO words (id, collection_id, term, term_norm) VALUES (1, ?, 'a', 'a')",
         )
-        .bind(a.id)
+        .bind(first_collection.id)
         .execute(&s.pool)
         .await
         .unwrap();
@@ -439,7 +434,7 @@ mod tests {
         .unwrap();
         // Leaving B (the active one) must not touch the quiz from A.
         let cancelled = s
-            .leave_collection(uid(1), b.id, ts(100))
+            .leave_collection(uid(1), second_collection.id, ts(100))
             .await
             .unwrap()
             .unwrap();
@@ -453,7 +448,7 @@ mod tests {
             None
         );
         let cancelled = s
-            .leave_collection(uid(1), a.id, ts(100))
+            .leave_collection(uid(1), first_collection.id, ts(100))
             .await
             .unwrap()
             .unwrap();
@@ -476,23 +471,23 @@ mod tests {
         s.ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
             .await
             .unwrap();
-        let a = s
+        let first_collection = s
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
             .unwrap()
             .unwrap();
-        let b = s
+        let second_collection = s
             .create_collection(uid(1), "B", &code("AAAA-AAAA"), ts(1))
             .await
             .unwrap()
             .unwrap();
-        s.leave_collection(uid(1), b.id, ts(2))
+        s.leave_collection(uid(1), second_collection.id, ts(2))
             .await
             .unwrap()
             .unwrap();
         let list = s.list_collections(uid(1)).await.unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, a.id);
+        assert_eq!(list[0].id, first_collection.id);
         assert!(!list[0].is_active);
     }
 }

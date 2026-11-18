@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use unicode_normalization::UnicodeNormalization;
 
 use crate::config::LimitsConfig;
@@ -16,6 +18,7 @@ pub struct ParseReport {
 }
 
 const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
+const DASHES: [&str; 3] = ["-", "–", "—"];
 
 /// Comparison form: NFC, lowercase, trimmed, inner whitespace collapsed. Accents are kept
 /// because they are significant in Greek.
@@ -39,27 +42,37 @@ impl Normalized {
     }
 }
 
-fn is_dash_only(s: &str) -> bool {
-    matches!(s, "-" | "–" | "—")
-}
+/// A line that does not hold both a term and a translation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("line is not a term and translation pair")]
+pub struct BadLine;
 
-/// Splits one non-blank line into trimmed term and translation, if it has both.
-fn split_line(line: &str) -> Option<(&str, &str)> {
-    // Dashes are searched in the raw line so that `слово - ` is a bad line, not a spaced pair.
-    let dash = DASH_SEPARATORS
-        .iter()
-        .filter_map(|sep| line.find(sep).map(|pos| (pos, sep.len())))
-        .min_by_key(|&(pos, _)| pos);
-    let (term, translation) = match dash {
-        Some((pos, len)) => (&line[..pos], &line[pos + len..]),
-        None => line.trim().split_once(char::is_whitespace)?,
-    };
-    let (term, translation) = (term.trim(), translation.trim());
-    if term.is_empty() || translation.is_empty() || is_dash_only(term) || is_dash_only(translation)
-    {
-        return None;
+impl FromStr for ParsedPair {
+    type Err = BadLine;
+
+    /// Splits one non-blank line into trimmed term and translation.
+    fn from_str(line: &str) -> Result<ParsedPair, BadLine> {
+        // Dashes are searched in the raw line so that `слово - ` is a bad line, not a spaced pair.
+        let dash = DASH_SEPARATORS
+            .iter()
+            .filter_map(|sep| line.find(sep).map(|pos| (pos, sep.len())))
+            .min_by_key(|&(pos, _)| pos);
+        let (term, translation) = match dash {
+            Some((pos, len)) => (&line[..pos], &line[pos + len..]),
+            None => line.trim().split_once(char::is_whitespace).ok_or(BadLine)?,
+        };
+        let (term, translation) = (term.trim(), translation.trim());
+        if [term, translation]
+            .iter()
+            .any(|side| side.is_empty() || DASHES.contains(side))
+        {
+            return Err(BadLine);
+        }
+        Ok(ParsedPair {
+            term: term.into(),
+            translation: translation.into(),
+        })
     }
-    Some((term, translation))
 }
 
 impl ParseReport {
@@ -69,15 +82,12 @@ impl ParseReport {
             if line.trim().is_empty() {
                 continue;
             }
-            match split_line(line) {
-                Some((term, translation))
-                    if term.chars().count() <= limits.max_term_chars
-                        && translation.chars().count() <= limits.max_translation_chars =>
+            match line.parse::<ParsedPair>() {
+                Ok(pair)
+                    if pair.term.chars().count() <= limits.max_term_chars
+                        && pair.translation.chars().count() <= limits.max_translation_chars =>
                 {
-                    report.pairs.push(ParsedPair {
-                        term: term.into(),
-                        translation: translation.into(),
-                    });
+                    report.pairs.push(pair);
                 }
                 _ => report.bad_lines.push(idx + 1),
             }
@@ -161,6 +171,11 @@ mod tests {
             ParseReport::parse("x абвгдежзийк", &limits()).bad_lines,
             [1]
         );
+    }
+    #[test]
+    fn pair_parses_through_from_str() {
+        assert_eq!("σπίτι дом".parse(), Ok(pair("σπίτι", "дом")));
+        assert_eq!("одно".parse::<ParsedPair>(), Err(BadLine));
     }
     #[test]
     fn normalizes() {

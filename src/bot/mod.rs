@@ -38,6 +38,13 @@ impl From<RequestError> for SendError {
     }
 }
 
+/// In private chats the chat id equals the user id.
+impl From<UserId> for ChatId {
+    fn from(user: UserId) -> ChatId {
+        ChatId(user.0)
+    }
+}
+
 /// Sends quizzes to private chats, where the chat id equals the user id.
 #[derive(Clone)]
 pub struct TelegramSender {
@@ -61,6 +68,23 @@ impl TelegramSender {
     }
 }
 
+impl TelegramSender {
+    /// Sends the quiz message; shared by the scheduler path and `/quiz` resends.
+    pub fn send(
+        &self,
+        user: UserId,
+        quiz: QuizId,
+        term: &str,
+        options: &[String],
+    ) -> impl Future<Output = Result<MessageId, RequestError>> + Send {
+        let request = self
+            .bot
+            .send_message(ChatId::from(user), term.to_owned())
+            .reply_markup(TelegramSender::keyboard(quiz, options));
+        async move { Ok(MessageId(request.await?.id.0)) }
+    }
+}
+
 impl QuizSender for TelegramSender {
     fn send_quiz(
         &self,
@@ -69,11 +93,8 @@ impl QuizSender for TelegramSender {
         term: &str,
         options: &[String],
     ) -> impl Future<Output = Result<MessageId, SendError>> + Send {
-        let request = self
-            .bot
-            .send_message(ChatId(user.0), term.to_owned())
-            .reply_markup(TelegramSender::keyboard(quiz, options));
-        async move { Ok(MessageId(request.await?.id.0)) }
+        let sent = self.send(user, quiz, term, options);
+        async move { Ok(sent.await?) }
     }
 }
 

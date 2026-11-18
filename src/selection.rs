@@ -18,12 +18,12 @@ impl SelectionConfig {
     /// Recency-weighted error rate, smoothed towards the configured prior.
     pub fn error_rate(&self, answers: &[AnswerRecord], now: Timestamp) -> f64 {
         let (mut total, mut errors) = (0.0, 0.0);
-        for a in answers {
+        for answer in answers {
             // `secs_since` clamps clock skew and future timestamps, so the weight never exceeds 1.
-            let age_days = now.secs_since(a.answered_at) as f64 / SECS_PER_DAY;
+            let age_days = now.secs_since(answer.answered_at) as f64 / SECS_PER_DAY;
             let w = 0.5_f64.powf(age_days / self.half_life_days);
             total += w;
-            if !a.is_correct {
+            if !answer.is_correct {
                 errors += w;
             }
         }

@@ -258,20 +258,26 @@ mod tests {
 
     #[tokio::test]
     async fn same_term_in_two_collections_is_separate() {
-        let (s, a) = setup_collection().await;
+        let (s, first_collection) = setup_collection().await;
         let code = "AAAA-BBBB".parse().unwrap();
-        let b = s
+        let second_collection = s
             .create_collection(uid(1), "B", &code, ts(0))
             .await
             .unwrap()
             .unwrap()
             .id;
-        s.import_pairs(a, &[pair("run", "бежать")]).await.unwrap();
-        s.import_pairs(b, &[pair("run", "управлять")])
+        s.import_pairs(first_collection, &[pair("run", "бежать")])
+            .await
+            .unwrap();
+        s.import_pairs(second_collection, &[pair("run", "управлять")])
             .await
             .unwrap();
         assert_eq!(
-            s.find_word(a, "run").await.unwrap().unwrap().translations,
+            s.find_word(first_collection, "run")
+                .await
+                .unwrap()
+                .unwrap()
+                .translations,
             ["бежать"]
         );
     }

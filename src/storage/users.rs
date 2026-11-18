@@ -1,7 +1,7 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::{Storage, decode_err};
+use super::Storage;
 use crate::ids::{CollectionId, UserId};
 use crate::period::Period;
 use crate::time::Timestamp;
@@ -15,19 +15,11 @@ pub struct User {
     pub active_collection_id: Option<CollectionId>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("stored period {0} is out of range")]
-struct BadStoredPeriod(i64);
-
-fn stored_period(secs: i64) -> Result<Period, sqlx::Error> {
-    Period::try_from(secs).map_err(|_| decode_err(BadStoredPeriod(secs)))
-}
-
 impl<'r> sqlx::FromRow<'r, SqliteRow> for User {
     fn from_row(row: &'r SqliteRow) -> Result<User, sqlx::Error> {
         Ok(User {
             id: row.try_get("id")?,
-            period: stored_period(row.try_get("period_secs")?)?,
+            period: row.try_get("period_secs")?,
             paused: row.try_get("paused")?,
             next_quiz_at: row.try_get("next_quiz_at")?,
             active_collection_id: row.try_get("active_collection_id")?,
@@ -73,7 +65,7 @@ impl Storage {
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
         let mut tx = self.begin_write().await?;
-        let open = has_open_quiz(&mut tx, id).await?;
+        let open = Self::has_open_quiz(&mut tx, id).await?;
         sqlx::query(
             "UPDATE users SET period_secs = ?1, \
              next_quiz_at = CASE WHEN ?2 THEN next_quiz_at ELSE ?3 END WHERE id = ?4",
@@ -96,7 +88,7 @@ impl Storage {
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
         let mut tx = self.begin_write().await?;
-        let open = has_open_quiz(&mut tx, id).await?;
+        let open = Self::has_open_quiz(&mut tx, id).await?;
         let updated = sqlx::query("UPDATE users SET paused = ? WHERE id = ?")
             .bind(paused)
             .bind(id)
@@ -119,12 +111,12 @@ impl Storage {
         user_id: UserId,
         now: Timestamp,
     ) -> Result<(), sqlx::Error> {
-        let secs: i64 = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
+        let period: Period = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
             .bind(user_id)
             .fetch_one(&mut **tx)
             .await?;
         sqlx::query("UPDATE users SET next_quiz_at = ? WHERE id = ?")
-            .bind(now + stored_period(secs)?)
+            .bind(now + period)
             .bind(user_id)
             .execute(&mut **tx)
             .await?;
@@ -141,22 +133,22 @@ impl Storage {
         .fetch_all(&self.pool)
         .await
     }
+
+    async fn has_open_quiz(
+        tx: &mut sqlx::SqliteConnection,
+        user_id: UserId,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM quizzes WHERE user_id = ? AND answered_at IS NULL)",
+        )
+        .bind(user_id)
+        .fetch_one(tx)
+        .await
+    }
 }
 
 const USER_SELECT_BY_ID: &str = "SELECT id, period_secs, paused, next_quiz_at, active_collection_id \
                                  FROM users WHERE id = ?";
-
-async fn has_open_quiz(
-    tx: &mut sqlx::SqliteConnection,
-    user_id: UserId,
-) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM quizzes WHERE user_id = ? AND answered_at IS NULL)",
-    )
-    .bind(user_id)
-    .fetch_one(tx)
-    .await
-}
 
 #[cfg(test)]
 mod tests {

@@ -84,19 +84,24 @@ impl fmt::Display for NoActiveCollection {
     }
 }
 
-/// Writes `text`, cutting it with an ellipsis if it exceeds Telegram's message limit.
-fn write_truncated(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
-    match text.char_indices().nth(MAX_MESSAGE_CHARS) {
-        Some(_) => {
-            // Keep room for the ellipsis so the whole message fits the limit.
-            let keep = text
-                .char_indices()
-                .nth(MAX_MESSAGE_CHARS - 1)
-                .map_or(text.len(), |(i, _)| i);
-            f.write_str(&text[..keep])?;
-            f.write_str("…")
+/// Text cut with an ellipsis if it exceeds Telegram's message limit.
+struct Truncated<'a>(&'a str);
+
+impl fmt::Display for Truncated<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = self.0;
+        match text.char_indices().nth(MAX_MESSAGE_CHARS) {
+            Some(_) => {
+                // Keep room for the ellipsis so the whole message fits the limit.
+                let keep = text
+                    .char_indices()
+                    .nth(MAX_MESSAGE_CHARS - 1)
+                    .map_or(text.len(), |(i, _)| i);
+                f.write_str(&text[..keep])?;
+                f.write_str("…")
+            }
+            None => f.write_str(text),
         }
-        None => f.write_str(text),
     }
 }
 
@@ -114,7 +119,7 @@ impl fmt::Display for WordsPage<'_> {
             // Writing to a String cannot fail.
             let _ = write!(text, "\n{} — {}", word.term, word.translations.join(", "));
         }
-        write_truncated(f, &text)
+        Truncated(&text).fmt(f)
     }
 }
 
@@ -184,7 +189,7 @@ impl fmt::Display for AnswerResult<'_> {
             // Writing to a String cannot fail.
             let _ = write!(text, " (ты выбрал: {})", self.chosen);
         }
-        write_truncated(f, &text)
+        Truncated(&text).fmt(f)
     }
 }
 

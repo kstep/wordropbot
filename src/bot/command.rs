@@ -19,6 +19,22 @@ pub enum Command {
     Unknown,
 }
 
+impl Command {
+    /// Parses the argument of `/collection`.
+    fn collection(arg: &str) -> Command {
+        if arg.is_empty() {
+            return Command::CollectionList;
+        }
+        match arg.split_once(char::is_whitespace) {
+            Some((word, title)) if word.eq_ignore_ascii_case("new") && !title.trim().is_empty() => {
+                Command::CollectionNew(title.trim().to_owned())
+            }
+            None if arg.eq_ignore_ascii_case("new") => Command::Unknown,
+            _ => Command::CollectionJoin(arg.to_owned()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("text is not a command")]
 pub struct NotCommand;
@@ -44,7 +60,7 @@ impl FromStr for Command {
         Ok(match name.to_lowercase().as_str() {
             "start" => Command::Start,
             "help" => Command::Help,
-            "collection" => collection(arg),
+            "collection" => Command::collection(arg),
             "words" => Command::Words,
             "remove" => required(Command::Remove),
             "stats" => Command::Stats,
@@ -55,19 +71,6 @@ impl FromStr for Command {
             "skip" => Command::Skip,
             _ => Command::Unknown,
         })
-    }
-}
-
-fn collection(arg: &str) -> Command {
-    if arg.is_empty() {
-        return Command::CollectionList;
-    }
-    match arg.split_once(char::is_whitespace) {
-        Some((word, title)) if word.eq_ignore_ascii_case("new") && !title.trim().is_empty() => {
-            Command::CollectionNew(title.trim().to_owned())
-        }
-        None if arg.eq_ignore_ascii_case("new") => Command::Unknown,
-        _ => Command::CollectionJoin(arg.to_owned()),
     }
 }
 

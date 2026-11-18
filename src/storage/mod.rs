@@ -62,9 +62,20 @@ impl Storage {
     }
 }
 
-/// Reports a stored value that violates a domain invariant as a decode error.
-fn decode_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> sqlx::Error {
-    sqlx::Error::Decode(Box::new(e))
+/// A stored value that violates a domain invariant, reported as a decode error.
+#[derive(Debug)]
+struct StoredValueError(Box<dyn std::error::Error + Send + Sync>);
+
+impl StoredValueError {
+    fn new<E: std::error::Error + Send + Sync + 'static>(source: E) -> StoredValueError {
+        StoredValueError(Box::new(source))
+    }
+}
+
+impl From<StoredValueError> for sqlx::Error {
+    fn from(error: StoredValueError) -> sqlx::Error {
+        sqlx::Error::Decode(error.0)
+    }
 }
 
 #[cfg(test)]

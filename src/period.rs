@@ -3,6 +3,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer};
+use sqlx::error::BoxDynError;
+use sqlx::sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef};
 
 /// A positive whole number of seconds that fits in `i64`, the type SQLite stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,6 +69,24 @@ impl fmt::Display for Period {
             "{}",
             humantime::format_duration(Duration::from_secs(self.0 as u64))
         )
+    }
+}
+
+impl sqlx::Type<Sqlite> for Period {
+    fn type_info() -> SqliteTypeInfo {
+        <i64 as sqlx::Type<Sqlite>>::type_info()
+    }
+
+    fn compatible(info: &SqliteTypeInfo) -> bool {
+        <i64 as sqlx::Type<Sqlite>>::compatible(info)
+    }
+}
+
+/// A stored value outside the invariant is a decode error, not a panic.
+impl<'r> sqlx::Decode<'r, Sqlite> for Period {
+    fn decode(value: SqliteValueRef<'r>) -> Result<Period, BoxDynError> {
+        let secs = <i64 as sqlx::Decode<Sqlite>>::decode(value)?;
+        Ok(Period::try_from(secs)?)
     }
 }
 
