@@ -1,5 +1,6 @@
 pub mod callback;
 pub mod command;
+pub mod gate;
 mod handlers;
 pub mod limiter;
 pub mod texts;
@@ -9,7 +10,7 @@ use std::{convert::Infallible, sync::Arc};
 use teloxide::{
     RequestError,
     adaptors::{Throttle, throttle::Limits},
-    dispatching::{DefaultKey, ShutdownToken},
+    dispatching::ShutdownToken,
     errors::ApiError,
     prelude::*,
     types::{InlineKeyboardMarkup, MessageId as TgMessageId},
@@ -114,7 +115,7 @@ impl QuizSender for TelegramSender {
 /// The Telegram update dispatcher together with everything it needs.
 pub struct BotApp {
     bot: TelegramBot,
-    dispatcher: Dispatcher<TelegramBot, Infallible, DefaultKey>,
+    dispatcher: Dispatcher<TelegramBot, Infallible, ()>,
     sender: TelegramSender,
     storage: Storage,
     config: Arc<Config>,
@@ -142,6 +143,9 @@ impl BotApp {
             ));
         let dispatcher = Dispatcher::builder(bot.clone(), schema)
             .dependencies(dptree::deps![handlers])
+            // Per-chat workers have bounded queues, and one full queue stalls the
+            // dispatcher for everyone; `UserGate` keeps each user's order instead.
+            .distribution_function(|_| None::<()>)
             // The default handler logs the whole update; unhandled kinds are simply ignored.
             .default_handler(|_| async {})
             .build();

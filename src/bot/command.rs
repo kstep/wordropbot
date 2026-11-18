@@ -26,7 +26,9 @@ impl Command {
             return Command::CollectionList;
         }
         match argument.split_once(char::is_whitespace) {
-            Some((word, title)) if word.eq_ignore_ascii_case("new") && !title.trim().is_empty() => {
+            // The argument is trimmed, so a title after the space is never
+            // blank.
+            Some((word, title)) if word.eq_ignore_ascii_case("new") => {
                 Command::CollectionNew(title.trim().to_owned())
             }
             None if argument.eq_ignore_ascii_case("new") => Command::Unknown,

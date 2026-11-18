@@ -14,6 +14,7 @@ pub enum CallbackAction {
     LeaveConfirm(CollectionId),
     RemoveConfirm(WordId),
     WordsPage(i64),
+    CollectionsPage(i64),
     Dismiss,
 }
 
@@ -37,6 +38,7 @@ impl fmt::Display for CallbackAction {
             CallbackAction::LeaveConfirm(id) => write!(formatter, "y:{id}"),
             CallbackAction::RemoveConfirm(id) => write!(formatter, "r:{id}"),
             CallbackAction::WordsPage(page) => write!(formatter, "w:{page}"),
+            CallbackAction::CollectionsPage(page) => write!(formatter, "p:{page}"),
             CallbackAction::Dismiss => formatter.write_str("d"),
         }
     }
@@ -60,6 +62,7 @@ impl FromStr for CallbackAction {
             (Some("y"), Some(id), None) => CallbackAction::LeaveConfirm(CollectionId(num(id)?)),
             (Some("r"), Some(id), None) => CallbackAction::RemoveConfirm(WordId(num(id)?)),
             (Some("w"), Some(page), None) => CallbackAction::WordsPage(num(page)?),
+            (Some("p"), Some(page), None) => CallbackAction::CollectionsPage(num(page)?),
             (Some("d"), None, None) => CallbackAction::Dismiss,
             _ => return Err(ParseCallbackError),
         };
@@ -86,6 +89,7 @@ mod tests {
             CallbackAction::LeaveConfirm(CollectionId(3)),
             CallbackAction::RemoveConfirm(WordId(i64::MAX)),
             CallbackAction::WordsPage(4),
+            CallbackAction::CollectionsPage(5),
             CallbackAction::Dismiss,
         ] {
             let text = action.to_string();

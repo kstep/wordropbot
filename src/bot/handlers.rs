@@ -13,10 +13,11 @@ use crate::{
         TelegramBot, TelegramSender,
         callback::CallbackAction,
         command::Command,
+        gate::UserGate,
         limiter::JoinLimiter,
         texts::{
             AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, PAUSED_NOTE,
-            StatsReport, WORDS_PAGE_SIZE, WordsPage,
+            StatsReport, Truncated, WORDS_PAGE_SIZE, WordsPage,
         },
     },
     code::Code,
@@ -41,6 +42,9 @@ const IMPORT_FORMAT: &str = "\
 /// A fresh code collides with an existing one with negligible probability.
 const CODE_ATTEMPTS: usize = 5;
 const BUTTON_NAME_CHARS: usize = 30;
+/// Keeps one page within Telegram's limits on text and buttons.
+const COLLECTIONS_PAGE_SIZE: usize = 10;
+const BUSY_NOTICE: &str = "Слишком много запросов, подожди немного.";
 const OPEN_QUIZ_NOTE: &str = "Сейчас открыт квиз: ответь на него, пришли заново через /quiz \
                               или отмени через /skip.";
 
@@ -71,11 +75,21 @@ struct View {
 }
 
 impl View {
-    /// The collection list with one pair of buttons per collection.
-    fn collections(collections: &[CollectionSummary]) -> View {
-        let mut text = String::from("Твои коллекции:");
+    /// One page of the collection list; the page is clamped to the valid range.
+    fn collections(collections: &[CollectionSummary], page: i64) -> View {
+        let total_pages = collections.len().div_ceil(COLLECTIONS_PAGE_SIZE).max(1) as i64;
+        let page = page.clamp(1, total_pages);
+        let mut text = if total_pages > 1 {
+            format!("Твои коллекции, страница {page} из {total_pages}:")
+        } else {
+            String::from("Твои коллекции:")
+        };
         let mut rows = Vec::new();
-        for collection in collections {
+        let shown = collections
+            .chunks(COLLECTIONS_PAGE_SIZE)
+            .nth(page as usize - 1)
+            .unwrap_or_default();
+        for collection in shown {
             let mark = if collection.is_active {
                 " (активная)"
             } else {
@@ -91,10 +105,29 @@ impl View {
                 CallbackAction::LeaveAsk(collection.id).button("Выйти"),
             ]);
         }
+        let mut navigation = Vec::new();
+        if page > 1 {
+            navigation.push(CallbackAction::CollectionsPage(page - 1).button("◀"));
+        }
+        if page < total_pages {
+            navigation.push(CallbackAction::CollectionsPage(page + 1).button("▶"));
+        }
+        if !navigation.is_empty() {
+            rows.push(navigation);
+        }
         View {
-            text,
+            text: Truncated(&text).to_string(),
             keyboard: Some(InlineKeyboardMarkup::new(rows)),
         }
+    }
+
+    /// The page of the list that shows this collection.
+    fn collections_page_of(collections: &[CollectionSummary], id: CollectionId) -> i64 {
+        let position = collections
+            .iter()
+            .position(|collection| collection.id == id)
+            .unwrap_or(0);
+        (position / COLLECTIONS_PAGE_SIZE) as i64 + 1
     }
 
     /// One page of the collection's words; the page is clamped to the valid
@@ -142,6 +175,7 @@ pub struct Handlers {
     service: QuizService<TelegramSender>,
     config: Arc<Config>,
     limiter: Mutex<JoinLimiter>,
+    gate: Arc<UserGate>,
 }
 
 impl Handlers {
@@ -149,12 +183,14 @@ impl Handlers {
         let sender = TelegramSender::new(bot.clone());
         let service = QuizService::new(storage.clone(), sender, config.clone());
         let limiter = Mutex::new(JoinLimiter::new(config.limits.join_attempts_per_minute));
+        let gate = UserGate::new(config.limits.max_pending_updates_per_user);
         Handlers {
             bot,
             storage,
             service,
             config,
             limiter,
+            gate,
         }
     }
 
@@ -162,6 +198,11 @@ impl Handlers {
 
     pub async fn on_message(&self, message: Message) {
         let user = UserId(message.chat.id.0);
+        let Some(mut admission) = self.gate.admit(user) else {
+            tracing::warn!(%user, "too many pending updates, dropping message");
+            return;
+        };
+        admission.wait_turn().await;
         if let Err(error) = self.handle_message(user, message.text()).await {
             tracing::error!(%user, %error, "message handler failed");
             // The apology is best effort: the failure may be Telegram itself.
@@ -179,7 +220,16 @@ impl Handlers {
             _ => None,
         };
         let notice = match press {
-            Some(press) => self.press_notice(press, query.data.as_deref()).await,
+            Some(press) => match self.gate.admit(press.user) {
+                Some(mut admission) => {
+                    admission.wait_turn().await;
+                    self.press_notice(press, query.data.as_deref()).await
+                }
+                None => {
+                    tracing::warn!(user = %press.user, "too many pending updates, dropping button press");
+                    Some(BUSY_NOTICE)
+                }
+            },
             // Group or inline-mode buttons are not ours; the button still needs
             // an answer.
             None => None,
@@ -237,6 +287,7 @@ impl Handlers {
             CallbackAction::LeaveConfirm(id) => self.leave_confirm(press, id).await,
             CallbackAction::RemoveConfirm(id) => self.remove_confirm(press, id).await,
             CallbackAction::WordsPage(page) => self.words_page(press, user, page).await,
+            CallbackAction::CollectionsPage(page) => self.collections_page(press, page).await,
             CallbackAction::Dismiss => self.dismiss(press).await,
         }
     }
@@ -341,7 +392,7 @@ impl Handlers {
         if collections.is_empty() {
             return self.no_collection(user).await;
         }
-        let view = View::collections(&collections);
+        let view = View::collections(&collections, 1);
         self.say_with(user, view.text, view.keyboard).await
     }
 
@@ -512,16 +563,27 @@ impl Handlers {
         }
         // Refresh the "(активная)" mark. The choice is saved, so a failed
         // refresh is not an error.
-        if let Err(error) = self.refresh_collections(press).await {
+        if let Err(error) = self.refresh_collections(press, id).await {
             tracing::warn!(user = %press.user, %error, "refreshing collection list failed");
         }
         Ok(Some("Коллекция выбрана."))
     }
 
-    async fn refresh_collections(&self, press: Press) -> Reply {
+    async fn refresh_collections(&self, press: Press, id: CollectionId) -> Reply {
         let collections = self.storage.list_collections(press.user).await?;
-        let view = View::collections(&collections);
+        let page = View::collections_page_of(&collections, id);
+        let view = View::collections(&collections, page);
         self.edit(press, view.text, view.keyboard).await
+    }
+
+    async fn collections_page(&self, press: Press, page: i64) -> Reply<Notice> {
+        let collections = self.storage.list_collections(press.user).await?;
+        if collections.is_empty() {
+            return Ok(Some("У тебя нет коллекций."));
+        }
+        let view = View::collections(&collections, page);
+        self.edit(press, view.text, view.keyboard).await?;
+        Ok(None)
     }
 
     async fn leave_ask(&self, press: Press, id: CollectionId) -> Reply<Notice> {
@@ -705,6 +767,8 @@ impl Handlers {
 
 #[cfg(test)]
 mod tests {
+    use teloxide::types::InlineKeyboardButtonKind;
+
     use super::*;
 
     fn summary(id: i64, code: &str, is_active: bool) -> CollectionSummary {
@@ -717,14 +781,62 @@ mod tests {
         }
     }
 
+    fn callback_data(view: &View) -> Vec<String> {
+        view.keyboard
+            .iter()
+            .flat_map(|keyboard| keyboard.inline_keyboard.iter().flatten())
+            .filter_map(|button| match &button.kind {
+                InlineKeyboardButtonKind::CallbackData(data) => Some(data.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn collection_list_marks_only_active() {
-        let view = View::collections(&[
-            summary(1, "K7QM-3XPA", false),
-            summary(2, "K7QM-3XPB", true),
-        ]);
+        let view = View::collections(
+            &[
+                summary(1, "K7QM-3XPA", false),
+                summary(2, "K7QM-3XPB", true),
+            ],
+            1,
+        );
         let lines: Vec<&str> = view.text.lines().collect();
         assert!(!lines[1].contains("(активная)"));
         assert!(lines[2].contains("(активная)"));
+    }
+
+    #[test]
+    fn long_collection_list_stays_within_limits_and_reachable() {
+        let collections: Vec<CollectionSummary> = (0..60)
+            .map(|id| CollectionSummary {
+                name: "щ".repeat(200),
+                ..summary(id, "K7QM-3XPA", false)
+            })
+            .collect();
+        let mut reachable = Vec::new();
+        for page in 1..=6 {
+            let view = View::collections(&collections, page);
+            assert!(view.text.chars().count() <= 4096, "page {page}");
+            let data = callback_data(&view);
+            assert!(data.len() <= 100, "page {page}");
+            reachable.extend(data);
+        }
+        for id in 0..60 {
+            assert!(reachable.contains(&format!("c:{id}")), "activate {id}");
+            assert!(reachable.contains(&format!("l:{id}")), "leave {id}");
+        }
+        let last = View::collections(&collections, 99);
+        assert!(callback_data(&last).contains(&"c:59".to_owned()));
+    }
+
+    #[test]
+    fn activated_collection_keeps_its_page() {
+        let collections: Vec<CollectionSummary> =
+            (0..25).map(|id| summary(id, "K7QM-3XPA", false)).collect();
+        assert_eq!(View::collections_page_of(&collections, CollectionId(0)), 1);
+        assert_eq!(View::collections_page_of(&collections, CollectionId(9)), 1);
+        assert_eq!(View::collections_page_of(&collections, CollectionId(10)), 2);
+        assert_eq!(View::collections_page_of(&collections, CollectionId(24)), 3);
     }
 }

@@ -8,6 +8,9 @@ use crate::{
 pub const WORDS_PAGE_SIZE: i64 = 20;
 
 const MAX_BAD_LINES: usize = 20;
+/// Leaves room for the page header, so all lines of a full page fit one message
+/// and no word is cut off the end.
+const MAX_WORD_LINE_CHARS: usize = 200;
 
 const HELP: &str = "\
 Я помогаю учить слова: присылаю квизы с вариантами перевода.
@@ -103,24 +106,40 @@ impl fmt::Display for NoActiveCollection {
 }
 
 /// Text cut with an ellipsis if it exceeds Telegram's message limit.
-struct Truncated<'a>(&'a str);
+pub struct Truncated<'a>(pub &'a str);
 
-impl fmt::Display for Truncated<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Truncated<'_> {
+    fn write_within(&self, formatter: &mut fmt::Formatter<'_>, max_chars: usize) -> fmt::Result {
         let text = self.0;
-        match text.char_indices().nth(MAX_MESSAGE_CHARS) {
+        match text.char_indices().nth(max_chars) {
             Some(_) => {
-                // Keep room for the ellipsis so the whole message fits the
-                // limit.
+                // Keep room for the ellipsis so the result fits the limit.
                 let keep = text
                     .char_indices()
-                    .nth(MAX_MESSAGE_CHARS - 1)
+                    .nth(max_chars - 1)
                     .map_or(text.len(), |(byte_index, _)| byte_index);
                 formatter.write_str(&text[..keep])?;
                 formatter.write_str("…")
             }
             None => formatter.write_str(text),
         }
+    }
+}
+
+impl fmt::Display for Truncated<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_within(formatter, MAX_MESSAGE_CHARS)
+    }
+}
+
+/// One word of the `/words` listing, cut to its share of the page.
+struct WordLine<'a>(&'a WordView);
+
+impl fmt::Display for WordLine<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = self.0;
+        let line = format!("{} — {}", word.term, word.translations.join(", "));
+        Truncated(&line).write_within(formatter, MAX_WORD_LINE_CHARS)
     }
 }
 
@@ -136,7 +155,7 @@ impl fmt::Display for WordsPage<'_> {
         let mut text = format!("Слова, страница {} из {}:", self.page, self.total_pages);
         for word in self.words {
             // Writing to a String cannot fail.
-            let _ = write!(text, "\n{} — {}", word.term, word.translations.join(", "));
+            let _ = write!(text, "\n{}", WordLine(word));
         }
         Truncated(&text).fmt(formatter)
     }
@@ -267,23 +286,25 @@ mod tests {
     use crate::{ids::WordId, storage::HardWord};
 
     #[test]
-    fn words_page_fits_telegram_limit() {
+    fn full_page_of_long_words_shows_every_word() {
         let long = "щ".repeat(200);
         let words: Vec<_> = (0..WORDS_PAGE_SIZE)
             .map(|number| WordView {
                 id: WordId(number),
-                term: long.clone(),
-                translations: vec![long.clone(); 50],
+                term: format!("слово{number}"),
+                translations: vec![long.clone(); 20],
             })
             .collect();
         let text = WordsPage {
             words: &words,
-            page: 1,
-            total_pages: 3,
+            page: i64::MAX,
+            total_pages: i64::MAX,
         }
         .to_string();
-        assert_eq!(text.chars().count(), 4096);
-        assert!(text.ends_with('…'));
+        assert!(text.chars().count() <= 4096);
+        for number in 0..WORDS_PAGE_SIZE {
+            assert!(text.contains(&format!("\nслово{number} — ")), "{number}");
+        }
     }
 
     #[test]
