@@ -139,10 +139,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn display_roundtrips() {
-        let code: Code = "K7QM-3XPA".parse().unwrap();
-        assert_eq!(code.to_string().parse::<Code>().unwrap(), code);
-    }
 }

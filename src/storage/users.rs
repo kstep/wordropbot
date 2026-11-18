@@ -160,10 +160,10 @@ const USER_SELECT_BY_ID: &str = "SELECT id, period_secs, paused, next_quiz_at, a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::testing::*;
+    use crate::testing::*;
 
-    fn period(secs: u64) -> Period {
-        Period::from_secs(secs).unwrap()
+    fn period(seconds: u64) -> Period {
+        Period::from_secs(seconds).unwrap()
     }
 
     #[tokio::test]
@@ -212,27 +212,11 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(
-            storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(160)
-        );
+        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(160));
         storage.set_paused(uid(1), true, ts(110)).await.unwrap();
         assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
         storage.set_paused(uid(1), false, ts(200)).await.unwrap();
-        assert_eq!(
-            storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(260)
-        );
+        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(260));
     }
 
     #[tokio::test]
@@ -245,27 +229,17 @@ mod tests {
     #[tokio::test]
     async fn open_quiz_blocks_reschedule_and_due() {
         let storage = Storage::in_memory().await;
+        let collection = user_with_collection(&storage, uid(1), "K7QM-3XPA").await;
         storage
-            .ensure_user(uid(1), period(60), ts(0))
+            .import_pairs(collection, &[pair("a", "б")])
             .await
             .unwrap();
-        sqlx::query("INSERT INTO collections (id, code, name, created_at) VALUES (1, 'C', 'C', 0)")
-            .execute(&storage.pool)
+        let word = storage.find_word(collection, "a").await.unwrap().unwrap();
+        storage
+            .create_quiz(uid(1), word.id, &["б".into()], 0, ts(0))
             .await
+            .unwrap()
             .unwrap();
-        sqlx::query(
-            "INSERT INTO words (id, collection_id, term, term_norm) VALUES (1, 1, 'a', 'a')",
-        )
-        .execute(&storage.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
-             VALUES (1, 1, '[]', 0, 0)",
-        )
-        .execute(&storage.pool)
-        .await
-        .unwrap();
         assert!(storage.due_users(ts(1000)).await.unwrap().is_empty());
         assert!(
             storage
@@ -273,14 +247,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(
-            storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(0)
-        );
+        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(0));
     }
 }

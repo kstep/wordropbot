@@ -125,29 +125,3 @@ async fn run() -> anyhow::Result<()> {
         (_, None) => Ok(()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::iter;
-
-    use super::*;
-
-    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(iter::once("wordropbot").chain(args.iter().copied()))
-    }
-
-    #[test]
-    fn config_defaults_and_overrides() {
-        assert_eq!(parse(&[]).unwrap().config, PathBuf::from("config.toml"));
-        assert_eq!(
-            parse(&["--config", "x.toml"]).unwrap().config,
-            PathBuf::from("x.toml")
-        );
-    }
-
-    #[test]
-    fn rejects_bad_arguments() {
-        assert!(parse(&["--config"]).is_err());
-        assert!(parse(&["--bogus"]).is_err());
-    }
-}

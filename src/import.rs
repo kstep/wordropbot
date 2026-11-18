@@ -109,14 +109,8 @@ impl ParseReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::LimitsConfig;
+    use crate::{config::LimitsConfig, testing::pair};
 
-    fn pair(term: &str, translation: &str) -> ParsedPair {
-        ParsedPair {
-            term: term.into(),
-            translation: translation.into(),
-        }
-    }
     fn limits() -> LimitsConfig {
         LimitsConfig {
             max_term_chars: 10,
@@ -161,13 +155,15 @@ mod tests {
         assert_eq!(report.bad_lines, [3]);
     }
     #[test]
-    fn empty_side_of_dash_is_bad() {
-        assert_eq!(ParseReport::parse("слово - ", &limits()).bad_lines, [1]);
-        assert_eq!(ParseReport::parse(" - перевод", &limits()).bad_lines, [1]);
-    }
-    #[test]
-    fn dash_only_side_is_bad() {
-        for line in ["слово -", "слово –", "слово —", "- слово"] {
+    fn empty_or_dash_only_side_is_bad() {
+        for line in [
+            "слово - ",
+            " - перевод",
+            "слово -",
+            "слово –",
+            "слово —",
+            "- слово",
+        ] {
             assert_eq!(ParseReport::parse(line, &limits()).bad_lines, [1], "{line}");
         }
     }
@@ -181,11 +177,6 @@ mod tests {
             ParseReport::parse("x абвгдежзийк", &limits()).bad_lines,
             [1]
         );
-    }
-    #[test]
-    fn pair_parses_through_from_str() {
-        assert_eq!("σπίτι дом".parse(), Ok(pair("σπίτι", "дом")));
-        assert_eq!("одно".parse::<ParsedPair>(), Err(BadLine));
     }
     #[test]
     fn case_variants_of_composed_letters_match() {

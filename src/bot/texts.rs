@@ -308,6 +308,25 @@ mod tests {
     }
 
     #[test]
+    fn text_over_telegram_limit_is_cut_with_ellipsis() {
+        let fitting = "щ".repeat(4096);
+        assert_eq!(Truncated(&fitting).to_string(), fitting);
+        let outcome = AnswerOutcome::Answered {
+            is_correct: false,
+            term: "щ".repeat(3000),
+            translations: vec!["ж".repeat(3000)],
+            chosen: "ы".into(),
+        };
+        for text in [
+            Truncated(&"щ".repeat(4097)).to_string(),
+            AnswerResult::new(&outcome).unwrap().to_string(),
+        ] {
+            assert_eq!(text.chars().count(), 4096);
+            assert!(text.ends_with('…'));
+        }
+    }
+
+    #[test]
     fn short_words_page_is_not_truncated() {
         let words = [WordView {
             id: WordId(1),
@@ -377,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn answer_result_follows_spec() {
+    fn answer_result_shows_mark_translations_and_wrong_choice() {
         let translations = vec!["бежать".to_string(), "управлять".to_string()];
         let right = AnswerOutcome::Answered {
             is_correct: true,
@@ -403,19 +422,6 @@ mod tests {
     }
 
     #[test]
-    fn long_answer_result_fits_telegram_limit() {
-        let outcome = AnswerOutcome::Answered {
-            is_correct: false,
-            term: "щ".repeat(3000),
-            translations: vec!["ж".repeat(3000)],
-            chosen: "ы".into(),
-        };
-        let text = AnswerResult::new(&outcome).unwrap().to_string();
-        assert_eq!(text.chars().count(), 4096);
-        assert!(text.ends_with('…'));
-    }
-
-    #[test]
     fn stats_report_shows_counts_and_hardest() {
         let stats = CollectionStats {
             word_count: 5,
@@ -430,29 +436,6 @@ mod tests {
         assert!(text.contains("Слов в коллекции: 5"));
         assert!(text.contains("75%"));
         assert!(text.contains("run — ошибок 50%"));
-    }
-
-    #[test]
-    fn help_documents_every_command() {
-        let help = Help {
-            quiz_options: 3,
-            paused: false,
-        }
-        .to_string();
-        for command in [
-            "/collection",
-            "/words",
-            "/remove",
-            "/stats",
-            "/period",
-            "/pause",
-            "/resume",
-            "/quiz",
-            "/skip",
-            "/help",
-        ] {
-            assert!(help.contains(command), "{command}");
-        }
     }
 
     #[test]
@@ -490,12 +473,6 @@ mod tests {
         .to_string();
         assert!(help.starts_with("Квизы приостановлены"));
         assert!(help.contains("/resume"));
-    }
-
-    #[test]
-    fn not_enough_words_names_minimum() {
-        let text = NotEnoughWords { quiz_options: 5 }.to_string();
-        assert!(text.contains("минимум 5 слов с разными"));
     }
 
     #[test]

@@ -108,18 +108,18 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_distractors_collapse() {
+    fn none_without_enough_distinct_distractors() {
         let mut rng = StdRng::seed_from_u64(1);
-        assert!(
-            QuizOptions::new(&strings(&["дом"]), &strings(&["стол", "Стол"]), 3, &mut rng)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn none_when_not_enough() {
-        let mut rng = StdRng::seed_from_u64(1);
-        assert!(QuizOptions::new(&strings(&["дом"]), &strings(&["стол"]), 3, &mut rng).is_none());
-        assert!(QuizOptions::new(&[], &strings(&["стол", "окно"]), 3, &mut rng).is_none());
+        let cases: [(&[&str], &[&str]); 3] = [
+            (&["дом"], &["стол", "Стол"]),
+            (&["дом"], &["стол"]),
+            (&[], &["стол", "окно"]),
+        ];
+        for (own, pool) in cases {
+            assert!(
+                QuizOptions::new(&strings(own), &strings(pool), 3, &mut rng).is_none(),
+                "{own:?} {pool:?}"
+            );
+        }
     }
 }

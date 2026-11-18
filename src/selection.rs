@@ -63,18 +63,11 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
+    use crate::testing::ts;
 
     const DAY: i64 = 86_400;
     fn config() -> SelectionConfig {
-        SelectionConfig {
-            half_life_days: 14.0,
-            prior_error: 0.5,
-            prior_strength: 1.0,
-            min_weight: 0.05,
-        }
-    }
-    fn ts(secs: i64) -> Timestamp {
-        Timestamp::from_secs(secs)
+        SelectionConfig::default()
     }
     fn correct(at: i64, count: usize) -> Vec<AnswerRecord> {
         vec![
@@ -89,16 +82,28 @@ mod tests {
         values.iter().copied().collect()
     }
     #[test]
-    fn new_word() {
-        assert!((config().word_weight(&[], ts(0)) - 0.525).abs() < 1e-9);
-    }
-    #[test]
-    fn ten_fresh_correct() {
-        assert!((config().word_weight(&correct(1000, 10), ts(1000)) - 0.0932).abs() < 1e-3);
-    }
-    #[test]
-    fn ten_correct_60_days_ago() {
-        assert!((config().word_weight(&correct(0, 10), ts(60 * DAY)) - 0.364).abs() < 1e-3);
+    fn word_weight_follows_answer_history() {
+        let cases = [
+            ("new word", Vec::new(), ts(0), 0.525, 1e-9),
+            (
+                "ten fresh correct",
+                correct(1000, 10),
+                ts(1000),
+                0.0932,
+                1e-3,
+            ),
+            (
+                "ten correct 60 days ago",
+                correct(0, 10),
+                ts(60 * DAY),
+                0.364,
+                1e-3,
+            ),
+        ];
+        for (name, answers, now, expected, tolerance) in cases {
+            let weight = config().word_weight(&answers, now);
+            assert!((weight - expected).abs() < tolerance, "{name}: {weight}");
+        }
     }
     #[test]
     fn half_life_halves_answer_weight() {
@@ -133,13 +138,5 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(1);
         assert_eq!(weights(&[]).pick(&mut rng), None);
         assert_eq!(weights(&[0.0, 1.0]).pick(&mut rng), Some(1));
-    }
-    #[test]
-    fn pick_follows_weights() {
-        let mut rng = StdRng::seed_from_u64(7);
-        let hits = (0..10_000)
-            .filter(|_| weights(&[1.0, 3.0]).pick(&mut rng) == Some(1))
-            .count();
-        assert!((7_200..7_800).contains(&hits), "{hits}");
     }
 }

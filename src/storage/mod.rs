@@ -89,21 +89,3 @@ impl Storage {
         Storage { pool, limits }
     }
 }
-
-#[cfg(test)]
-mod testing {
-    use crate::{
-        ids::{MessageId, UserId},
-        time::Timestamp,
-    };
-
-    pub fn ts(secs: i64) -> Timestamp {
-        Timestamp::from_secs(secs)
-    }
-    pub fn uid(id: i64) -> UserId {
-        UserId(id)
-    }
-    pub fn mid(id: i32) -> MessageId {
-        MessageId(id)
-    }
-}

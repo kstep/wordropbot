@@ -259,10 +259,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        period::Period,
-        storage::{StorageLimits, testing::*},
-    };
+    use crate::{storage::StorageLimits, testing::*};
 
     fn code(text: &str) -> Code {
         text.parse().unwrap()
@@ -297,10 +294,7 @@ mod tests {
         })
         .await;
         for user in [uid(1), uid(2)] {
-            storage
-                .ensure_user(user, Period::from_secs(60).unwrap(), ts(0))
-                .await
-                .unwrap();
+            add_user(&storage, user).await;
         }
         let first = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
@@ -350,14 +344,8 @@ mod tests {
     #[tokio::test]
     async fn join_makes_collection_active() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
-        storage
-            .ensure_user(uid(2), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
+        add_user(&storage, uid(2)).await;
         let collection = storage
             .create_collection(uid(1), "Греческий", &code("K7QM-3XPA"), ts(0))
             .await
@@ -393,10 +381,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_code_returns_none() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
         storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
@@ -414,14 +399,8 @@ mod tests {
     #[tokio::test]
     async fn last_member_leaving_deletes_collection() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
-        storage
-            .ensure_user(uid(2), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
+        add_user(&storage, uid(2)).await;
         let collection = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
@@ -465,14 +444,8 @@ mod tests {
     #[tokio::test]
     async fn non_member_cannot_touch_collection() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
-        storage
-            .ensure_user(uid(2), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
+        add_user(&storage, uid(2)).await;
         let collection = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
@@ -496,10 +469,7 @@ mod tests {
     #[tokio::test]
     async fn rejoin_keeps_membership_and_reactivates() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
         let first_collection = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
@@ -537,10 +507,7 @@ mod tests {
     #[tokio::test]
     async fn leaving_cancels_open_quiz_of_this_collection_only() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
         let first_collection = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await
@@ -551,20 +518,21 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        sqlx::query(
-            "INSERT INTO words (id, collection_id, term, term_norm) VALUES (1, ?, 'a', 'a')",
-        )
-        .bind(first_collection.id)
-        .execute(&storage.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO quizzes (user_id, word_id, options, correct_index, message_id, sent_at) \
-             VALUES (1, 1, '[]', 0, 42, 0)",
-        )
-        .execute(&storage.pool)
-        .await
-        .unwrap();
+        storage
+            .import_pairs(first_collection.id, &[pair("a", "б")])
+            .await
+            .unwrap();
+        let word = storage
+            .find_word(first_collection.id, "a")
+            .await
+            .unwrap()
+            .unwrap();
+        let quiz = storage
+            .create_quiz(uid(1), word.id, &["б".into()], 0, ts(0))
+            .await
+            .unwrap()
+            .unwrap();
+        storage.set_quiz_message(quiz, mid(42)).await.unwrap();
         // Leaving B (the active one) must not touch the quiz from A.
         let cancelled = storage
             .leave_collection(uid(1), second_collection.id, ts(100))
@@ -593,24 +561,13 @@ mod tests {
                 message_id: Some(mid(42))
             }]
         );
-        assert_eq!(
-            storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(160)
-        );
+        assert_eq!(next_quiz_at(&storage, uid(1)).await, ts(160));
     }
 
     #[tokio::test]
     async fn list_works_without_active_collection() {
         let storage = Storage::in_memory().await;
-        storage
-            .ensure_user(uid(1), Period::from_secs(60).unwrap(), ts(0))
-            .await
-            .unwrap();
+        add_user(&storage, uid(1)).await;
         let first_collection = storage
             .create_collection(uid(1), "A", &code("K7QM-3XPA"), ts(0))
             .await

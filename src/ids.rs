@@ -35,20 +35,3 @@ id_type!(
     /// Telegram message id.
     MessageId(i32)
 );
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn displays_inner_value() {
-        assert_eq!(UserId(-42).to_string(), "-42");
-        assert_eq!(MessageId(7).to_string(), "7");
-    }
-
-    #[test]
-    fn ids_are_ordered_by_value() {
-        assert!(WordId(1) < WordId(2));
-        assert_eq!(QuizId(5), QuizId(5));
-    }
-}

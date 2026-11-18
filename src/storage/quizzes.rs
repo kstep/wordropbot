@@ -423,13 +423,7 @@ mod tests {
     use sqlx::Error;
 
     use super::*;
-    use crate::{
-        code::Code,
-        config::SelectionConfig,
-        import::ParsedPair,
-        period::Period,
-        storage::{Storage, testing::*},
-    };
+    use crate::{code::Code, period::Period, storage::Storage, testing::*};
 
     const PERIOD: i64 = 600;
 
@@ -439,22 +433,6 @@ mod tests {
         collection: CollectionId,
         code: Code,
         options: Vec<String>,
-    }
-
-    fn pair(term: &str, translation: &str) -> ParsedPair {
-        ParsedPair {
-            term: term.into(),
-            translation: translation.into(),
-        }
-    }
-
-    fn selection_config() -> SelectionConfig {
-        SelectionConfig {
-            half_life_days: 14.0,
-            prior_error: 0.5,
-            prior_strength: 1.0,
-            min_weight: 0.05,
-        }
     }
 
     async fn fixture() -> Fixture {
@@ -547,20 +525,14 @@ mod tests {
             AnswerOutcome::Closed
         ));
         assert_eq!(
-            fixture
-                .storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
+            next_quiz_at(&fixture.storage, uid(1)).await,
             ts(100 + PERIOD)
         );
         let candidates = fixture.storage.candidates(uid(1)).await.unwrap();
         assert_eq!(
             candidates
                 .iter()
-                .find(|candidates| candidates.word_id == fixture.word)
+                .find(|candidate| candidate.word_id == fixture.word)
                 .unwrap()
                 .answers
                 .len(),
@@ -699,21 +671,22 @@ mod tests {
             AnswerOutcome::Closed
         ));
         assert!(fixture.storage.open_quiz(uid(1)).await.unwrap().is_some());
-        assert_eq!(
-            fixture
-                .storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(0)
-        );
+        assert_eq!(next_quiz_at(&fixture.storage, uid(1)).await, ts(0));
     }
 
     #[tokio::test]
     async fn skip_leaves_no_history() {
         let fixture = fixture().await;
+        // Without an open quiz nothing is cancelled or rescheduled.
+        assert!(
+            fixture
+                .storage
+                .skip_quiz(uid(1), ts(50))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(next_quiz_at(&fixture.storage, uid(1)).await, ts(0));
         fixture
             .storage
             .create_quiz(uid(1), fixture.word, &fixture.options, 0, ts(10))
@@ -737,13 +710,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            fixture
-                .storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
+            next_quiz_at(&fixture.storage, uid(1)).await,
             ts(100 + PERIOD)
         );
         assert!(
@@ -753,66 +720,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|candidates| candidates.answers.is_empty())
-        );
-    }
-
-    #[tokio::test]
-    async fn skip_without_quiz_changes_nothing() {
-        let fixture = fixture().await;
-        assert!(
-            fixture
-                .storage
-                .skip_quiz(uid(1), ts(100))
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            fixture
-                .storage
-                .get_user(uid(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(0)
-        );
-    }
-
-    #[tokio::test]
-    async fn removing_word_cancels_other_members_quiz() {
-        let fixture = fixture().await;
-        let quiz = fixture
-            .storage
-            .create_quiz(uid(2), fixture.word, &fixture.options, 0, ts(10))
-            .await
-            .unwrap()
-            .unwrap();
-        fixture
-            .storage
-            .remove_word(uid(1), fixture.word, ts(100))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(fixture.storage.open_quiz(uid(2)).await.unwrap().is_none());
-        assert!(matches!(
-            fixture
-                .storage
-                .answer_quiz(quiz, uid(2), 0, ts(101))
-                .await
-                .unwrap(),
-            AnswerOutcome::Closed
-        ));
-        assert_eq!(
-            fixture
-                .storage
-                .get_user(uid(2))
-                .await
-                .unwrap()
-                .unwrap()
-                .next_quiz_at,
-            ts(100 + PERIOD)
+                .all(|candidate| candidate.answers.is_empty())
         );
     }
 
@@ -854,7 +762,7 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
-                .find(|candidates| candidates.word_id == fixture.word)
+                .find(|candidate| candidate.word_id == fixture.word)
                 .unwrap()
                 .answers
                 .len(),
@@ -1018,7 +926,7 @@ mod tests {
             .unwrap();
         let stats = fixture
             .storage
-            .collection_stats(uid(1), fixture.collection, now, &selection_config())
+            .collection_stats(uid(1), fixture.collection, now, &SelectionConfig::default())
             .await
             .unwrap();
         assert_eq!(stats.word_count, 4);
@@ -1072,7 +980,12 @@ mod tests {
         }
         let stats = fixture
             .storage
-            .collection_stats(uid(1), fixture.collection, ts(5), &selection_config())
+            .collection_stats(
+                uid(1),
+                fixture.collection,
+                ts(5),
+                &SelectionConfig::default(),
+            )
             .await
             .unwrap();
         assert_eq!(stats.word_count, 13);

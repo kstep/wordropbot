@@ -334,7 +334,12 @@ mod tests {
     use rand::{RngCore, SeedableRng};
 
     use super::*;
-    use crate::{config::QuizConfig, ids::CollectionId};
+    use crate::{
+        config::QuizConfig,
+        import::ParsedPair,
+        period::Period,
+        testing::{FAKE_MESSAGE_ID, QuizFixture, ts},
+    };
 
     pub fn candidate(word_id: i64, collection_id: i64, term: &str, translation: &str) -> Candidate {
         Candidate {
@@ -344,10 +349,6 @@ mod tests {
             translations: vec![translation.to_owned()],
             answers: Vec::new(),
         }
-    }
-
-    fn ts(secs: i64) -> Timestamp {
-        Timestamp::from_secs(secs)
     }
 
     /// Counts generator draws: a retry per ineligible word shows up as draws
@@ -470,5 +471,204 @@ mod tests {
                 ChosenQuiz::choose(&candidates, &Config::for_tests(), ts(0), &mut rng).unwrap();
             assert_ne!(quiz.word_id, WordId(9));
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_due_skips_user_no_longer_due() {
+        for paused in [true, false] {
+            let fixture = QuizFixture::with_words(1, 4).await;
+            if paused {
+                fixture
+                    .storage
+                    .set_paused(UserId(1), true, ts(50))
+                    .await
+                    .unwrap();
+            } else {
+                fixture
+                    .storage
+                    .set_period(UserId(1), Period::from_secs(600).unwrap(), ts(50))
+                    .await
+                    .unwrap();
+            }
+            let outcome = fixture
+                .service()
+                .dispatch_due(UserId(1), ts(100), &mut fixture.rng())
+                .await
+                .unwrap();
+            assert_eq!(outcome, None, "paused: {paused}");
+            assert!(fixture.sender.sent().is_empty(), "paused: {paused}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_send_postpones_user_by_one_period() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        fixture
+            .sender
+            .fail(UserId(1), SendError::Rejected("message is too long".into()));
+        fixture
+            .service()
+            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(fixture.storage.due_users(ts(159)).await.unwrap().is_empty());
+        assert_eq!(
+            fixture.storage.due_users(ts(160)).await.unwrap(),
+            [UserId(1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn quiz_cancelled_during_send_loses_its_buttons() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        fixture.sender.cancel_during_send(fixture.storage.clone());
+        fixture
+            .service()
+            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(fixture.sender.cleared(), [(UserId(1), FAKE_MESSAGE_ID)]);
+    }
+
+    #[tokio::test]
+    async fn manual_dispatch_ignores_pause() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        fixture
+            .storage
+            .set_paused(UserId(1), true, ts(50))
+            .await
+            .unwrap();
+        let outcome = fixture
+            .service()
+            .dispatch(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, DispatchOutcome::Sent);
+    }
+
+    #[tokio::test]
+    async fn repeated_translations_give_no_eligible_words() {
+        let fixture = QuizFixture::with_words(1, 0).await;
+        let pairs: Vec<ParsedPair> = (0..6)
+            .map(|number| ParsedPair {
+                term: format!("term{number}"),
+                translation: "одно".into(),
+            })
+            .collect();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &pairs)
+            .await
+            .unwrap();
+        let service = fixture.service();
+        assert!(
+            !service
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            service
+                .dispatch(UserId(1), ts(100), &mut fixture.rng())
+                .await
+                .unwrap(),
+            DispatchOutcome::NoEligibleWords
+        );
+        assert!(fixture.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn passed_precheck_still_needs_fitting_word() {
+        // Three distinct translations, but all on one word: they are all
+        // excluded as synonyms, so no distractors remain.
+        let fixture = QuizFixture::with_words(1, 0).await;
+        let pairs: Vec<ParsedPair> = ["один", "два", "три"]
+            .into_iter()
+            .map(|translation| ParsedPair {
+                term: "word".into(),
+                translation: translation.into(),
+            })
+            .collect();
+        fixture
+            .storage
+            .import_pairs(fixture.collection, &pairs)
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .storage
+                .has_enough_distinct_translations(UserId(1), 3)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fixture
+                .service()
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn request_resends_open_quiz_and_clears_old_buttons() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        let service = fixture.service();
+        let first = service
+            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(first, QuizRequest::Sent);
+        assert!(fixture.sender.cleared().is_empty());
+        let second = service
+            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(second, QuizRequest::Sent);
+        let sent = fixture.sender.sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], sent[1]);
+        assert_eq!(fixture.sender.cleared(), [(UserId(1), FAKE_MESSAGE_ID)]);
+    }
+
+    #[tokio::test]
+    async fn blocked_resend_pauses_user_and_keeps_quiz() {
+        let fixture = QuizFixture::with_words(1, 4).await;
+        let service = fixture.service();
+        service
+            .request_quiz(UserId(1), ts(100), &mut fixture.rng())
+            .await
+            .unwrap();
+        fixture.sender.fail(UserId(1), SendError::Blocked);
+        let outcome = service
+            .request_quiz(UserId(1), ts(101), &mut fixture.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, QuizRequest::Blocked);
+        assert!(
+            fixture
+                .storage
+                .get_user(UserId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .paused
+        );
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

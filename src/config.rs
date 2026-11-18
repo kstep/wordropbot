@@ -253,24 +253,24 @@ mod tests {
     use super::*;
 
     pub(super) const VALID: &str = r#"[telegram]
-token = "PUT_BOT_TOKEN_HERE"   # не пустой
+token = "PUT_BOT_TOKEN_HERE"
 
 [database]
 path = "wordropbot.db"
 
 [selection]
-half_life_days = 14.0   # > 0
-prior_error = 0.5       # 0..=1
-prior_strength = 1.0    # > 0
-min_weight = 0.05       # > 0 и <= 1
+half_life_days = 14.0
+prior_error = 0.5
+prior_strength = 1.0
+min_weight = 0.05
 
 [quiz]
-options = 3             # 2..=8, включая верный вариант
+options = 3
 
 [schedule]
 default_period = "1d"
 min_period = "1m"
-tick_seconds = 30       # > 0
+tick_seconds = 30
 
 [limits]
 max_term_chars = 200
@@ -291,14 +291,6 @@ max_pending_updates_per_user = 16
             config.database.path,
             Path::new("/var/lib/wordropbot/wordropbot.db")
         );
-    }
-
-    #[test]
-    fn parses_valid() {
-        let config: Config = VALID.parse().unwrap();
-        assert_eq!(config.quiz.options, 3);
-        assert_eq!(config.schedule.default_period.as_secs(), 86400);
-        assert_eq!(config.schedule.min_period.as_secs(), 60);
     }
 
     #[test]
@@ -364,7 +356,7 @@ max_pending_updates_per_user = 16
     const TOKEN_ONLY: &str = "[telegram]\ntoken = \"123:abc\"\n";
 
     #[test]
-    fn token_only_config_uses_defaults() {
+    fn omitted_keys_use_defaults() {
         let config: Config = TOKEN_ONLY.parse().unwrap();
         assert_eq!(config.database.path, Path::new("wordropbot.db"));
         assert_eq!(config.selection.half_life_days, 14.0);
@@ -382,15 +374,12 @@ max_pending_updates_per_user = 16
         assert_eq!(config.limits.max_translations_per_word, 20);
         assert_eq!(config.limits.max_collections_per_user, 20);
         assert_eq!(config.limits.max_pending_updates_per_user, 16);
-    }
 
-    #[test]
-    fn partial_section_keeps_other_defaults() {
-        let config: Config = format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")
+        let partial: Config = format!("{TOKEN_ONLY}[selection]\nmin_weight = 0.1\n")
             .parse()
             .unwrap();
-        assert_eq!(config.selection.min_weight, 0.1);
-        assert_eq!(config.selection.half_life_days, 14.0);
+        assert_eq!(partial.selection.min_weight, 0.1);
+        assert_eq!(partial.selection.half_life_days, 14.0);
     }
 
     #[test]
