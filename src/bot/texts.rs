@@ -105,14 +105,17 @@ impl<'a> AnswerResult<'a> {
     /// `None` when the quiz was already closed: there is nothing to show.
     pub fn new(outcome: &'a AnswerOutcome) -> Option<AnswerResult<'a>> {
         match outcome {
-            AnswerOutcome::Answered { is_correct, term, translations, chosen } => {
-                Some(AnswerResult {
-                    is_correct: *is_correct,
-                    term,
-                    translations,
-                    chosen,
-                })
-            }
+            AnswerOutcome::Answered {
+                is_correct,
+                term,
+                translations,
+                chosen,
+            } => Some(AnswerResult {
+                is_correct: *is_correct,
+                term,
+                translations,
+                chosen,
+            }),
             AnswerOutcome::Closed => None,
         }
     }
@@ -140,11 +143,20 @@ impl fmt::Display for StatsReport<'_> {
             return f.write_str("Ответов пока нет.");
         }
         let percent = stats.correct * 100 / stats.answered;
-        write!(f, "Верных ответов: {percent}% ({} из {})", stats.correct, stats.answered)?;
+        write!(
+            f,
+            "Верных ответов: {percent}% ({} из {})",
+            stats.correct, stats.answered
+        )?;
         if !stats.hardest.is_empty() {
             f.write_str("\n\nСамые трудные слова:")?;
             for word in &stats.hardest {
-                write!(f, "\n{} — ошибок {:.0}%", word.term, word.error_rate * 100.0)?;
+                write!(
+                    f,
+                    "\n{} — ошибок {:.0}%",
+                    word.term,
+                    word.error_rate * 100.0
+                )?;
             }
         }
         Ok(())
@@ -167,7 +179,12 @@ mod tests {
                 translations: vec![long.clone(); 50],
             })
             .collect();
-        let text = WordsPage { words: &words, page: 1, total_pages: 3 }.to_string();
+        let text = WordsPage {
+            words: &words,
+            page: 1,
+            total_pages: 3,
+        }
+        .to_string();
         assert_eq!(text.chars().count(), 4096);
         assert!(text.ends_with('…'));
     }
@@ -179,7 +196,12 @@ mod tests {
             term: "run".into(),
             translations: vec!["бежать".into(), "управлять".into()],
         }];
-        let text = WordsPage { words: &words, page: 1, total_pages: 1 }.to_string();
+        let text = WordsPage {
+            words: &words,
+            page: 1,
+            total_pages: 1,
+        }
+        .to_string();
         assert!(text.contains("run — бежать, управлять"));
         assert!(!text.contains('…'));
     }
@@ -187,16 +209,30 @@ mod tests {
     #[test]
     fn import_report_lists_first_20_bad_lines() {
         let bad: Vec<usize> = (1..=25).collect();
-        let summary = ImportSummary { added: 2, updated: 1 };
-        let text = ImportReport { summary: &summary, bad_lines: &bad }.to_string();
+        let summary = ImportSummary {
+            added: 2,
+            updated: 1,
+        };
+        let text = ImportReport {
+            summary: &summary,
+            bad_lines: &bad,
+        }
+        .to_string();
         assert!(text.contains("20"));
         assert!(!text.contains("21"));
     }
 
     #[test]
     fn import_report_without_bad_lines_omits_them() {
-        let summary = ImportSummary { added: 2, updated: 1 };
-        let text = ImportReport { summary: &summary, bad_lines: &[] }.to_string();
+        let summary = ImportSummary {
+            added: 2,
+            updated: 1,
+        };
+        let text = ImportReport {
+            summary: &summary,
+            bad_lines: &[],
+        }
+        .to_string();
         assert!(!text.contains("строки"));
     }
 
@@ -245,7 +281,10 @@ mod tests {
             word_count: 5,
             answered: 4,
             correct: 3,
-            hardest: vec![HardWord { term: "run".into(), error_rate: 0.5 }],
+            hardest: vec![HardWord {
+                term: "run".into(),
+                error_rate: 0.5,
+            }],
         };
         let text = StatsReport(&stats).to_string();
         assert!(text.contains("Слов в коллекции: 5"));
@@ -256,8 +295,16 @@ mod tests {
     #[test]
     fn help_documents_every_command() {
         for cmd in [
-            "/collection", "/words", "/remove", "/stats", "/period", "/pause", "/resume", "/quiz",
-            "/skip", "/help",
+            "/collection",
+            "/words",
+            "/remove",
+            "/stats",
+            "/period",
+            "/pause",
+            "/resume",
+            "/quiz",
+            "/skip",
+            "/help",
         ] {
             assert!(HELP.contains(cmd), "{cmd}");
         }

@@ -15,7 +15,10 @@ pub enum ConfigError {
     /// Only the message and line are kept: `toml::de::Error`'s `Display` quotes the
     /// offending source line, which could leak a malformed token into logs.
     #[error("invalid config{}: {message}", line.map_or(String::new(), |l| format!(" (line {l})")))]
-    Parse { message: String, line: Option<usize> },
+    Parse {
+        message: String,
+        line: Option<usize>,
+    },
     #[error("invalid config: {0}")]
     Invalid(String),
 }
@@ -80,7 +83,9 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, ConfigError> {
         let c: Config = toml::from_str(text).map_err(|e| ConfigError::Parse {
             message: e.message().to_owned(),
-            line: e.span().map(|span| text[..span.start].matches('\n').count() + 1),
+            line: e
+                .span()
+                .map(|span| text[..span.start].matches('\n').count() + 1),
         })?;
         c.validate()?;
         Ok(c)
@@ -216,7 +221,10 @@ join_attempts_per_minute = 5
     fn parse_error_does_not_quote_source() {
         let error = Config::parse("[telegram]\ntoken = sEcReT\n").unwrap_err();
         assert!(!error.to_string().contains("sEcReT"), "{error}");
-        assert!(matches!(error, ConfigError::Parse { line: Some(2), .. }), "{error}");
+        assert!(
+            matches!(error, ConfigError::Parse { line: Some(2), .. }),
+            "{error}"
+        );
     }
 
     #[test]

@@ -118,14 +118,23 @@ mod tests {
 
     #[test]
     fn missing_required_argument_is_unknown() {
-        for text in ["/remove", "/remove   ", "/period", "/collection new", "/collection new  "] {
+        for text in [
+            "/remove",
+            "/remove   ",
+            "/period",
+            "/collection new",
+            "/collection new  ",
+        ] {
             assert_eq!(parse(text), Ok(Command::Unknown), "{text}");
         }
     }
 
     #[test]
     fn arguments_are_trimmed() {
-        assert_eq!(parse("/remove   σπίτι  "), Ok(Command::Remove("σπίτι".into())));
+        assert_eq!(
+            parse("/remove   σπίτι  "),
+            Ok(Command::Remove("σπίτι".into()))
+        );
         assert_eq!(parse("/period@bot 2h"), Ok(Command::Period("2h".into())));
     }
 }

@@ -61,13 +61,24 @@ mod tests {
 
     const DAY: i64 = 86_400;
     fn cfg() -> SelectionConfig {
-        SelectionConfig { half_life_days: 14.0, prior_error: 0.5, prior_strength: 1.0, min_weight: 0.05 }
+        SelectionConfig {
+            half_life_days: 14.0,
+            prior_error: 0.5,
+            prior_strength: 1.0,
+            min_weight: 0.05,
+        }
     }
     fn ts(secs: i64) -> Timestamp {
         Timestamp::from_secs(secs)
     }
     fn correct(at: i64, n: usize) -> Vec<AnswerRecord> {
-        vec![AnswerRecord { answered_at: ts(at), is_correct: true }; n]
+        vec![
+            AnswerRecord {
+                answered_at: ts(at),
+                is_correct: true
+            };
+            n
+        ]
     }
     fn weights(w: &[f64]) -> Weights {
         w.iter().copied().collect()
@@ -86,8 +97,14 @@ mod tests {
     }
     #[test]
     fn half_life_halves_answer_weight() {
-        let cfg = SelectionConfig { prior_error: 0.0, ..cfg() };
-        let wrong = [AnswerRecord { answered_at: ts(0), is_correct: false }];
+        let cfg = SelectionConfig {
+            prior_error: 0.0,
+            ..cfg()
+        };
+        let wrong = [AnswerRecord {
+            answered_at: ts(0),
+            is_correct: false,
+        }];
         // w = 0.5, p = 0.5 / (0.5 + 1)
         assert!((cfg.error_rate(&wrong, ts(14 * DAY)) - 1.0 / 3.0).abs() < 1e-9);
     }
@@ -100,7 +117,10 @@ mod tests {
     }
     #[test]
     fn weight_never_below_minimum() {
-        let cfg = SelectionConfig { prior_error: 0.0, ..cfg() };
+        let cfg = SelectionConfig {
+            prior_error: 0.0,
+            ..cfg()
+        };
         assert!((cfg.word_weight(&correct(0, 1000), ts(0)) - 0.05).abs() < 1e-9);
     }
     #[test]
@@ -112,7 +132,9 @@ mod tests {
     #[test]
     fn pick_follows_weights() {
         let mut rng = StdRng::seed_from_u64(7);
-        let hits = (0..10_000).filter(|_| weights(&[1.0, 3.0]).pick(&mut rng) == Some(1)).count();
+        let hits = (0..10_000)
+            .filter(|_| weights(&[1.0, 3.0]).pick(&mut rng) == Some(1))
+            .count();
         assert!((7_200..7_800).contains(&hits), "{hits}");
     }
 }

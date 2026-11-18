@@ -13,7 +13,10 @@ pub struct JoinLimiter {
 
 impl JoinLimiter {
     pub fn new(max_per_minute: u32) -> Self {
-        JoinLimiter { max_per_minute, failures: HashMap::new() }
+        JoinLimiter {
+            max_per_minute,
+            failures: HashMap::new(),
+        }
     }
 
     pub fn allow(&mut self, user: UserId, now: Timestamp) -> bool {
@@ -39,7 +42,10 @@ impl JoinLimiter {
 }
 
 fn expire(times: &mut VecDeque<Timestamp>, now: Timestamp) {
-    while times.front().is_some_and(|&t| now.secs_since(t) >= WINDOW_SECS) {
+    while times
+        .front()
+        .is_some_and(|&t| now.secs_since(t) >= WINDOW_SECS)
+    {
         times.pop_front();
     }
 }

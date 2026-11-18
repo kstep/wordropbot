@@ -69,7 +69,10 @@ mod tests {
     #[test]
     fn roundtrips_within_telegram_limit() {
         for a in [
-            CallbackAction::Answer { quiz: QuizId(i64::MAX), index: 7 },
+            CallbackAction::Answer {
+                quiz: QuizId(i64::MAX),
+                index: 7,
+            },
             CallbackAction::Activate(CollectionId(1)),
             CallbackAction::LeaveAsk(CollectionId(2)),
             CallbackAction::LeaveConfirm(CollectionId(3)),
@@ -85,7 +88,9 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        for s in ["", "x", "a:1", "a:x:1", "r:", "zz:1", "a:1:2:3", "c:1:2", "d:1"] {
+        for s in [
+            "", "x", "a:1", "a:x:1", "r:", "zz:1", "a:1:2:3", "c:1:2", "d:1",
+        ] {
             assert_eq!(s.parse::<CallbackAction>(), Err(ParseCallbackError), "{s}");
         }
     }
