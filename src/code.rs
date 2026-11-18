@@ -48,31 +48,33 @@ mod tests {
     const ALPHABET: &str = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 
     #[test]
-    fn generated_code_has_format() {
+    fn generated_code_has_canonical_format() {
         let mut rng = StdRng::seed_from_u64(1);
-        let code = generate_code(&mut rng);
-        assert_eq!(code.len(), 9);
-        assert_eq!(&code[4..5], "-");
-        assert!(code.replace('-', "").chars().all(|c| ALPHABET.contains(c)));
+        let code = Code::generate(&mut rng);
+        assert_eq!(code.as_str().len(), 9);
+        assert_eq!(&code.as_str()[4..5], "-");
+        assert!(code.as_str().replace('-', "").chars().all(|c| ALPHABET.contains(c)));
     }
 
     #[test]
-    fn normalizes_user_input() {
-        assert_eq!(normalize_code("k7qm3xpa").as_deref(), Some("K7QM-3XPA"));
-        assert_eq!(normalize_code(" K7QM-3XPA ").as_deref(), Some("K7QM-3XPA"));
+    fn parses_user_input() {
+        assert_eq!("k7qm3xpa".parse::<Code>().unwrap().as_str(), "K7QM-3XPA");
+        assert_eq!(" K7QM-3XPA ".parse::<Code>().unwrap().as_str(), "K7QM-3XPA");
     }
 
     #[test]
-    fn rejects_bad_codes() {
-        for s in [
-            "",
-            "K7QM",
-            "K7QM-3XPAA",
-            "O7QM-3XPA",
-            "K1QM-3XPA",
-            "K7QM-3XP!",
-        ] {
-            assert_eq!(normalize_code(s), None, "{s}");
+    fn reports_parse_errors() {
+        for s in ["", "K7QM", "K7QM-3XPAA"] {
+            assert_eq!(s.parse::<Code>(), Err(ParseCodeError::InvalidLength), "{s}");
         }
+        for s in ["O7QM-3XPA", "K1QM-3XPA", "K7QM-3XP!", "\u{132}7QM-3XPA"] {
+            assert_eq!(s.parse::<Code>(), Err(ParseCodeError::InvalidCharacter), "{s}");
+        }
+    }
+
+    #[test]
+    fn display_roundtrips() {
+        let code: Code = "K7QM-3XPA".parse().unwrap();
+        assert_eq!(code.to_string().parse::<Code>().unwrap(), code);
     }
 }

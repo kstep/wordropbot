@@ -182,8 +182,8 @@ join_attempts_per_minute = 5
     fn parses_valid() {
         let c = Config::parse(VALID).unwrap();
         assert_eq!(c.quiz.options, 3);
-        assert_eq!(c.schedule.default_period, 86400);
-        assert_eq!(c.schedule.min_period, 60);
+        assert_eq!(c.schedule.default_period.as_secs(), 86400);
+        assert_eq!(c.schedule.min_period.as_secs(), 60);
     }
 
     #[test]
