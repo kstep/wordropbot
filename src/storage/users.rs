@@ -41,7 +41,7 @@ impl Storage {
 
     /// Returns whether a quiz is open; the next quiz is rescheduled only if none is.
     pub async fn set_period(&self, id: i64, secs: i64, now: i64) -> Result<bool, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let open = has_open_quiz(&mut tx, id).await?;
         sqlx::query(
             "UPDATE users SET period_secs = ?1, \
@@ -59,7 +59,7 @@ impl Storage {
 
     /// Returns whether a quiz is open; resuming reschedules only if none is.
     pub async fn set_paused(&self, id: i64, paused: bool, now: i64) -> Result<bool, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let open = has_open_quiz(&mut tx, id).await?;
         sqlx::query(
             "UPDATE users SET paused = ?1, \

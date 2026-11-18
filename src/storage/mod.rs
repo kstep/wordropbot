@@ -28,6 +28,12 @@ impl Storage {
         Ok(Storage { pool })
     }
 
+    /// Takes the write lock up front: a deferred transaction that reads and then
+    /// writes fails with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` does not retry.
+    async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+        self.pool.begin_with("BEGIN IMMEDIATE").await
+    }
+
     /// One connection that never expires: every new in-memory connection
     /// would otherwise get its own empty database.
     #[cfg(test)]

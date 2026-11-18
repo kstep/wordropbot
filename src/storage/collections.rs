@@ -32,7 +32,7 @@ impl Storage {
         code: &str,
         now: i64,
     ) -> Result<Option<Collection>, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let collection: Option<Collection> = sqlx::query_as(
             "INSERT INTO collections (code, name, created_at) VALUES (?, ?, ?) \
              ON CONFLICT(code) DO NOTHING RETURNING id, code, name",
@@ -57,7 +57,7 @@ impl Storage {
         code: &str,
         now: i64,
     ) -> Result<Option<Collection>, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let collection: Option<Collection> =
             sqlx::query_as("SELECT id, code, name FROM collections WHERE code = ?")
                 .bind(code)
@@ -78,7 +78,7 @@ impl Storage {
         sqlx::query_as(
             "SELECT c.id, c.code, c.name, \
                     (SELECT COUNT(*) FROM words w WHERE w.collection_id = c.id) AS word_count, \
-                    (u.active_collection_id = c.id) AS is_active \
+                    COALESCE(u.active_collection_id = c.id, 0) AS is_active \
              FROM memberships m \
              JOIN collections c ON c.id = m.collection_id \
              JOIN users u ON u.id = m.user_id \
@@ -124,7 +124,7 @@ impl Storage {
         collection_id: i64,
         now: i64,
     ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let member: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM memberships WHERE user_id = ? AND collection_id = ?)",
         )
@@ -369,5 +369,18 @@ mod tests {
             }]
         );
         assert_eq!(s.get_user(1).await.unwrap().unwrap().next_quiz_at, 160);
+    }
+
+    #[tokio::test]
+    async fn list_works_without_active_collection() {
+        let s = Storage::in_memory().await;
+        s.ensure_user(1, 60, 0).await.unwrap();
+        let a = s.create_collection(1, "A", "K7QM-3XPA", 0).await.unwrap().unwrap();
+        let b = s.create_collection(1, "B", "AAAA-AAAA", 1).await.unwrap().unwrap();
+        s.leave_collection(1, b.id, 2).await.unwrap().unwrap();
+        let list = s.list_collections(1).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, a.id);
+        assert!(!list[0].is_active);
     }
 }
