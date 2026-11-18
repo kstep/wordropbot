@@ -1,3 +1,76 @@
+use std::str::FromStr;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Start,
+    Help,
+    CollectionList,
+    CollectionNew(String),
+    /// Raw argument; the handler parses it into a `Code`.
+    CollectionJoin(String),
+    Words,
+    Remove(String),
+    Stats,
+    Period(String),
+    Pause,
+    Resume,
+    Quiz,
+    Skip,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("text is not a command")]
+pub struct NotACommand;
+
+impl FromStr for Command {
+    type Err = NotACommand;
+
+    fn from_str(text: &str) -> Result<Command, NotACommand> {
+        let body = text.trim().strip_prefix('/').ok_or(NotACommand)?;
+        let (head, arg) = match body.split_once(char::is_whitespace) {
+            Some((head, arg)) => (head, arg.trim()),
+            None => (body, ""),
+        };
+        // Drop the `@botname` mention that Telegram adds in group chats.
+        let name = head.split_once('@').map_or(head, |(name, _)| name);
+        let required = |make: fn(String) -> Command| {
+            if arg.is_empty() {
+                Command::Unknown
+            } else {
+                make(arg.to_owned())
+            }
+        };
+        Ok(match name.to_lowercase().as_str() {
+            "start" => Command::Start,
+            "help" => Command::Help,
+            "collection" => collection(arg),
+            "words" => Command::Words,
+            "remove" => required(Command::Remove),
+            "stats" => Command::Stats,
+            "period" => required(Command::Period),
+            "pause" => Command::Pause,
+            "resume" => Command::Resume,
+            "quiz" => Command::Quiz,
+            "skip" => Command::Skip,
+            _ => Command::Unknown,
+        })
+    }
+}
+
+fn collection(arg: &str) -> Command {
+    if arg.is_empty() {
+        return Command::CollectionList;
+    }
+    match arg.split_once(char::is_whitespace) {
+        Some(("new", title)) if !title.trim().is_empty() => {
+            Command::CollectionNew(title.trim().to_owned())
+        }
+        None if arg == "new" => Command::Unknown,
+        _ => Command::CollectionJoin(arg.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
