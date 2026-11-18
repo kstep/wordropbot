@@ -94,9 +94,8 @@ impl Handlers {
     // Entry points: failures are logged and never reach the dispatcher.
 
     pub async fn on_message(&self, msg: Message) {
-        let Some(text) = msg.text() else { return };
         let user = UserId(msg.chat.id.0);
-        if let Err(error) = self.handle_message(user, text).await {
+        if let Err(error) = self.handle_message(user, msg.text()).await {
             tracing::error!(%user, %error, "message handler failed");
             // The apology is best effort: the failure may be Telegram itself.
             let _ = self.say(user, APOLOGY).await;
@@ -104,33 +103,42 @@ impl Handlers {
     }
 
     pub async fn on_callback(&self, query: CallbackQuery) {
-        let Ok(raw_user) = i64::try_from(query.from.id.0) else {
-            return;
-        };
-        let press = Press {
-            user: UserId(raw_user),
-            message: query.regular_message().map(|m| m.id),
-        };
-        let notice = match self.handle_callback(press, query.data.as_deref()).await {
-            Ok(notice) => notice,
-            Err(error) => {
-                tracing::error!(user = %press.user, %error, "callback handler failed");
-                Some(APOLOGY)
+        let private = query
+            .message
+            .as_ref()
+            .is_some_and(|m| m.chat().is_private());
+        let notice = match i64::try_from(query.from.id.0) {
+            Ok(raw_user) if private => {
+                // `id()` covers inaccessible messages too, so their edits are not lost.
+                let press = Press {
+                    user: UserId(raw_user),
+                    message: query.message.as_ref().map(|m| m.id()),
+                };
+                match self.handle_callback(press, query.data.as_deref()).await {
+                    Ok(notice) => notice,
+                    Err(error) => {
+                        tracing::error!(user = %press.user, %error, "callback handler failed");
+                        Some(APOLOGY)
+                    }
+                }
             }
+            // Group or inline-mode buttons are not ours; the button still needs an answer.
+            _ => None,
         };
         let mut answer = self.bot.answer_callback_query(query.id.clone());
         if let Some(text) = notice {
             answer = answer.text(text);
         }
         if let Err(error) = answer.await {
-            tracing::warn!(user = %press.user, %error, "answering callback failed");
+            tracing::warn!(%error, "answering callback failed");
         }
     }
 
-    async fn handle_message(&self, user: UserId, text: &str) -> Reply {
+    async fn handle_message(&self, user: UserId, text: Option<&str>) -> Reply {
         self.storage
             .ensure_user(user, self.config.schedule.default_period, Timestamp::now())
             .await?;
+        let Some(text) = text else { return Ok(()) };
         match text.parse::<Command>() {
             Ok(Command::Start | Command::Help | Command::Unknown) => self.help(user).await,
             Ok(Command::CollectionList) => self.collection_list(user).await,
@@ -426,7 +434,14 @@ impl Handlers {
             .await?;
         match AnswerResult::new(&outcome) {
             Some(result) => {
-                self.edit(press, result.to_string(), None).await?;
+                // The answer is already stored, so a failed edit must not ask for a retry.
+                let text = result.to_string();
+                if let Err(error) = self.edit(press, text.clone(), None).await {
+                    tracing::warn!(user = %press.user, %error, "showing quiz result failed");
+                    if self.say(press.user, text).await.is_err() {
+                        return Ok(Some("Ответ засчитан, но показать результат не получилось."));
+                    }
+                }
                 Ok(None)
             }
             None => Ok(Some("Этот квиз уже закрыт.")),
@@ -584,7 +599,7 @@ impl Handlers {
         Ok(())
     }
 
-    /// Replaces the pressed message; a missing keyboard removes the old one.
+    /// Replaces the pressed message (or sends a new one if there is none); no keyboard removes the old one.
     async fn edit(
         &self,
         press: Press,
@@ -592,7 +607,7 @@ impl Handlers {
         keyboard: Option<InlineKeyboardMarkup>,
     ) -> Reply {
         let Some(message) = press.message else {
-            return Ok(());
+            return self.say_with(press.user, text, keyboard).await;
         };
         let request = self
             .bot
