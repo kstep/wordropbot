@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use rand::Rng;
 use rand::seq::{IndexedRandom, SliceRandom};
 
-use crate::import::normalize;
+use crate::import::Normalized;
 
 pub struct QuizOptions {
     // Private so `correct_index` always points into `options`.
@@ -26,8 +26,11 @@ impl QuizOptions {
         let correct = own.choose(rng)?;
         // Excludes every translation of the word, not only the chosen one, so a synonym never
         // shows up as a wrong answer.
-        let mut seen: HashSet<String> = own.iter().map(|o| normalize(o)).collect();
-        let distractors: Vec<&String> = pool.iter().filter(|p| seen.insert(normalize(p))).collect();
+        let mut seen: HashSet<Normalized> = own.iter().map(|o| Normalized::new(o)).collect();
+        let distractors: Vec<&String> = pool
+            .iter()
+            .filter(|p| seen.insert(Normalized::new(p)))
+            .collect();
         if distractors.len() < count - 1 {
             return None;
         }
@@ -56,7 +59,6 @@ impl QuizOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::import::normalize;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -86,7 +88,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            q.options().iter().filter(|o| normalize(o) == "дом").count(),
+            q.options()
+                .iter()
+                .filter(|o| Normalized::new(o).as_str() == "дом")
+                .count(),
             1
         );
     }

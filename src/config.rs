@@ -133,8 +133,10 @@ impl Config {
 }
 
 #[cfg(test)]
-pub fn test_config() -> Config {
-    Config::parse(tests::VALID).expect("VALID config parses")
+impl Config {
+    pub fn for_tests() -> Config {
+        Config::parse(tests::VALID).expect("VALID config parses")
+    }
 }
 
 #[cfg(test)]

@@ -19,13 +19,24 @@ const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
 
 /// Comparison form: NFC, lowercase, trimmed, inner whitespace collapsed. Accents are kept
 /// because they are significant in Greek.
-pub fn normalize(s: &str) -> String {
-    let composed: String = s.nfc().collect();
-    composed
-        .to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Normalized(String);
+
+impl Normalized {
+    pub fn new(text: &str) -> Normalized {
+        let composed: String = text.nfc().collect();
+        Normalized(
+            composed
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 fn is_dash_only(s: &str) -> bool {
@@ -153,8 +164,8 @@ mod tests {
     }
     #[test]
     fn normalizes() {
-        assert_eq!(normalize("  ΣΠΊΤΙ   Μου "), "σπίτι μου");
-        assert_eq!(normalize("e\u{301}"), "é");
-        assert_ne!(normalize("σπίτι"), normalize("σπιτι"));
+        assert_eq!(Normalized::new("  ΣΠΊΤΙ   Μου ").as_str(), "σπίτι μου");
+        assert_eq!(Normalized::new("e\u{301}").as_str(), "é");
+        assert_ne!(Normalized::new("σπίτι"), Normalized::new("σπιτι"));
     }
 }

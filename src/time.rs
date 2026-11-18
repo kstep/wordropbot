@@ -45,13 +45,19 @@ mod tests {
     #[test]
     fn adds_period() {
         let period = Period::from_secs(60).unwrap();
-        assert_eq!(Timestamp::from_secs(100) + period, Timestamp::from_secs(160));
+        assert_eq!(
+            Timestamp::from_secs(100) + period,
+            Timestamp::from_secs(160)
+        );
     }
 
     #[test]
     fn addition_saturates() {
         let period = Period::from_secs(60).unwrap();
-        assert_eq!(Timestamp::from_secs(i64::MAX) + period, Timestamp::from_secs(i64::MAX));
+        assert_eq!(
+            Timestamp::from_secs(i64::MAX) + period,
+            Timestamp::from_secs(i64::MAX)
+        );
     }
 
     #[test]
