@@ -28,7 +28,7 @@ impl<S: QuizSender> Scheduler<S> {
             if *shutdown.borrow() {
                 break;
             }
-            match self.service.dispatch(user, now, rng).await {
+            match self.service.dispatch_due(user, now, rng).await {
                 Ok(DispatchOutcome::Sent) => sent += 1,
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%user, %error, "quiz dispatch failed"),
@@ -307,6 +307,69 @@ mod tests {
             0
         );
         assert!(f.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_due_skips_user_paused_after_listing() {
+        let f = fixture_with_words(1, 4).await;
+        f.s.set_paused(UserId(1), true, ts(50)).await.unwrap();
+        let outcome = f
+            .scheduler
+            .service
+            .dispatch_due(UserId(1), ts(100), &mut f.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, DispatchOutcome::NotDue);
+        assert!(f.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_due_skips_user_rescheduled_after_listing() {
+        let f = fixture_with_words(1, 4).await;
+        f.s.set_period(UserId(1), Period::from_secs(600).unwrap(), ts(50))
+            .await
+            .unwrap();
+        let outcome = f
+            .scheduler
+            .service
+            .dispatch_due(UserId(1), ts(100), &mut f.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, DispatchOutcome::NotDue);
+        assert!(f.sender.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manual_dispatch_ignores_pause() {
+        let f = fixture_with_words(1, 4).await;
+        f.s.set_paused(UserId(1), true, ts(50)).await.unwrap();
+        let outcome = f
+            .scheduler
+            .service
+            .dispatch(UserId(1), ts(100), &mut f.rng())
+            .await
+            .unwrap();
+        assert_eq!(outcome, DispatchOutcome::Sent);
+    }
+
+    #[tokio::test]
+    async fn eligibility_follows_word_count() {
+        let f = fixture_with_words(1, 2).await;
+        assert!(
+            !f.scheduler
+                .service
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
+        f.add_words(2).await;
+        assert!(
+            f.scheduler
+                .service
+                .has_eligible_words(UserId(1), ts(100))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

@@ -13,7 +13,8 @@ use crate::bot::callback::CallbackAction;
 use crate::bot::command::Command;
 use crate::bot::limiter::JoinLimiter;
 use crate::bot::texts::{
-    self, AnswerResult, ImportReport, StatsReport, WORDS_PAGE_SIZE, WordsPage,
+    AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, StatsReport,
+    WORDS_PAGE_SIZE, WordsPage,
 };
 use crate::bot::{TelegramBot, TelegramSender};
 use crate::code::Code;
@@ -22,12 +23,10 @@ use crate::ids::{CollectionId, MessageId, QuizId, UserId, WordId};
 use crate::import::ParseReport;
 use crate::period::Period;
 use crate::service::{DispatchOutcome, QuizService};
-use crate::storage::{ImportSummary, Storage};
+use crate::storage::{CollectionSummary, ImportSummary, Storage};
 use crate::time::Timestamp;
 
 const APOLOGY: &str = "Что-то пошло не так, попробуй ещё раз позже.";
-const NO_COLLECTION: &str = "Активной коллекции нет. Создай её командой /collection new <название> \
-     или подключись по коду: /collection <КОД>.";
 const IMPORT_FORMAT: &str = "\
 Слова присылай по паре в строке: «слово перевод», например:
 σπίτι дом
@@ -60,9 +59,37 @@ struct Press {
     message: TgMessageId,
 }
 
-struct WordsView {
+struct View {
     text: String,
     keyboard: Option<InlineKeyboardMarkup>,
+}
+
+impl View {
+    /// The collection list with one pair of buttons per collection.
+    fn collections(collections: &[CollectionSummary]) -> View {
+        let mut text = String::from("Твои коллекции:");
+        let mut rows = Vec::new();
+        for c in collections {
+            let mark = if c.is_active {
+                " (активная)"
+            } else {
+                ""
+            };
+            text.push_str(&format!(
+                "\n{} — {}, слов: {}{mark}",
+                c.name, c.code, c.word_count
+            ));
+            let name: String = c.name.chars().take(BUTTON_NAME_CHARS).collect();
+            rows.push(vec![
+                Handlers::button(format!("Выбрать «{name}»"), CallbackAction::Activate(c.id)),
+                Handlers::button("Выйти", CallbackAction::LeaveAsk(c.id)),
+            ]);
+        }
+        View {
+            text,
+            keyboard: Some(InlineKeyboardMarkup::new(rows)),
+        }
+    }
 }
 
 /// One method per command and per callback action.
@@ -132,12 +159,14 @@ impl Handlers {
     }
 
     async fn handle_message(&self, user: UserId, text: Option<&str>) -> Reply {
-        self.storage
+        let row = self
+            .storage
             .ensure_user(user, self.config.schedule.default_period, Timestamp::now())
             .await?;
         let Some(text) = text else { return Ok(()) };
         match text.parse::<Command>() {
-            Ok(Command::Start | Command::Help | Command::Unknown) => self.help(user).await,
+            Ok(Command::Start) => self.help(user, row.paused).await,
+            Ok(Command::Help | Command::Unknown) => self.help(user, false).await,
             Ok(Command::CollectionList) => self.collection_list(user).await,
             Ok(Command::CollectionNew(name)) => self.collection_new(user, &name).await,
             Ok(Command::CollectionJoin(raw)) => self.collection_join(user, &raw).await,
@@ -177,8 +206,12 @@ impl Handlers {
 
     // Commands.
 
-    async fn help(&self, user: UserId) -> Reply {
-        self.say(user, texts::HELP).await
+    async fn help(&self, user: UserId, paused: bool) -> Reply {
+        let help = Help {
+            quiz_options: self.config.quiz.options,
+            paused,
+        };
+        self.say(user, help.to_string()).await
     }
 
     async fn collection_new(&self, user: UserId, name: &str) -> Reply {
@@ -247,33 +280,15 @@ impl Handlers {
     async fn collection_list(&self, user: UserId) -> Reply {
         let collections = self.storage.list_collections(user).await?;
         if collections.is_empty() {
-            return self.say(user, NO_COLLECTION).await;
+            return self.no_collection(user).await;
         }
-        let mut text = String::from("Твои коллекции:");
-        let mut rows = Vec::new();
-        for c in &collections {
-            let mark = if c.is_active {
-                " (активная)"
-            } else {
-                ""
-            };
-            text.push_str(&format!(
-                "\n{} — {}, слов: {}{mark}",
-                c.name, c.code, c.word_count
-            ));
-            let name: String = c.name.chars().take(BUTTON_NAME_CHARS).collect();
-            rows.push(vec![
-                Self::button(format!("Выбрать «{name}»"), CallbackAction::Activate(c.id)),
-                Self::button("Выйти", CallbackAction::LeaveAsk(c.id)),
-            ]);
-        }
-        self.say_with(user, text, Some(InlineKeyboardMarkup::new(rows)))
-            .await
+        let view = View::collections(&collections);
+        self.say_with(user, view.text, view.keyboard).await
     }
 
     async fn import_text(&self, user: UserId, text: &str) -> Reply {
         let Some(collection) = self.active_collection(user).await? else {
-            return self.say(user, NO_COLLECTION).await;
+            return self.no_collection(user).await;
         };
         let report = ParseReport::parse(text, &self.config.limits);
         let summary = if report.pairs.is_empty() {
@@ -292,6 +307,15 @@ impl Handlers {
         if report.pairs.is_empty() {
             reply.push_str("\n\n");
             reply.push_str(IMPORT_FORMAT);
+        } else if !self
+            .service
+            .has_eligible_words(user, Timestamp::now())
+            .await?
+        {
+            let hint = NotEnoughWords {
+                quiz_options: self.config.quiz.options,
+            };
+            reply.push_str(&format!("\n\n{hint}"));
         }
         self.say(user, reply).await
     }
@@ -299,13 +323,13 @@ impl Handlers {
     async fn words(&self, user: UserId) -> Reply {
         match self.words_view(user, 1).await? {
             Some(view) => self.say_with(user, view.text, view.keyboard).await,
-            None => self.say(user, NO_COLLECTION).await,
+            None => self.no_collection(user).await,
         }
     }
 
     async fn remove(&self, user: UserId, term: &str) -> Reply {
         let Some(collection) = self.active_collection(user).await? else {
-            return self.say(user, NO_COLLECTION).await;
+            return self.no_collection(user).await;
         };
         let Some(word) = self.storage.find_word(collection, term).await? else {
             return self
@@ -325,7 +349,7 @@ impl Handlers {
 
     async fn stats(&self, user: UserId) -> Reply {
         let Some(collection) = self.active_collection(user).await? else {
-            return self.say(user, NO_COLLECTION).await;
+            return self.no_collection(user).await;
         };
         let stats = self
             .storage
@@ -398,7 +422,8 @@ impl Handlers {
             .dispatch(user, Timestamp::now(), &mut rng)
             .await?
         {
-            DispatchOutcome::Sent | DispatchOutcome::Blocked => Ok(()),
+            // `NotDue` comes only from `dispatch_due`.
+            DispatchOutcome::Sent | DispatchOutcome::Blocked | DispatchOutcome::NotDue => Ok(()),
             DispatchOutcome::AlreadyOpen => self.say(user, "Квиз уже открыт, повтори /quiz.").await,
             DispatchOutcome::NoEligibleWords => {
                 self.say(
@@ -438,6 +463,12 @@ impl Handlers {
     async fn activate(&self, press: Press, id: CollectionId) -> Reply<Notice> {
         if !self.storage.set_active_collection(press.user, id).await? {
             return Ok(Some("Ты не участник этой коллекции."));
+        }
+        // Refresh the "(активная)" mark. The choice is saved, so a failed refresh is not an error.
+        let collections = self.storage.list_collections(press.user).await?;
+        let view = View::collections(&collections);
+        if let Err(error) = self.edit(press, view.text, view.keyboard).await {
+            tracing::warn!(user = %press.user, %error, "refreshing collection list failed");
         }
         Ok(Some("Коллекция выбрана."))
     }
@@ -519,13 +550,13 @@ impl Handlers {
     // Helpers.
 
     /// `None` when the user has no active collection. The page is clamped to the valid range.
-    async fn words_view(&self, user: UserId, page: i64) -> Reply<Option<WordsView>> {
+    async fn words_view(&self, user: UserId, page: i64) -> Reply<Option<View>> {
         let Some(collection) = self.active_collection(user).await? else {
             return Ok(None);
         };
         let total = self.storage.count_words(collection).await?;
         if total == 0 {
-            return Ok(Some(WordsView {
+            return Ok(Some(View {
                 text: "В коллекции пока нет слов.".into(),
                 keyboard: None,
             }));
@@ -543,7 +574,7 @@ impl Handlers {
         if page < total_pages {
             row.push(Self::button("▶", CallbackAction::WordsPage(page + 1)));
         }
-        Ok(Some(WordsView {
+        Ok(Some(View {
             text: WordsPage {
                 words: &words,
                 page,
@@ -552,6 +583,14 @@ impl Handlers {
             .to_string(),
             keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
         }))
+    }
+
+    /// Tells the user an active collection is needed, hinting at `/collection`
+    /// when they already have collections to pick from.
+    async fn no_collection(&self, user: UserId) -> Reply {
+        let has_collections = !self.storage.list_collections(user).await?.is_empty();
+        self.say(user, NoActiveCollection { has_collections }.to_string())
+            .await
     }
 
     async fn active_collection(&self, user: UserId) -> Reply<Option<CollectionId>> {
@@ -627,5 +666,31 @@ impl Handlers {
             .bot
             .edit_message_reply_markup(ChatId(user.0), TgMessageId(message.0))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(id: i64, code: &str, is_active: bool) -> CollectionSummary {
+        CollectionSummary {
+            id: CollectionId(id),
+            code: code.parse().unwrap(),
+            name: format!("Коллекция {id}"),
+            word_count: 3,
+            is_active,
+        }
+    }
+
+    #[test]
+    fn collection_list_marks_only_active() {
+        let view = View::collections(&[
+            summary(1, "K7QM-3XPA", false),
+            summary(2, "K7QM-3XPB", true),
+        ]);
+        let lines: Vec<&str> = view.text.lines().collect();
+        assert!(!lines[1].contains("(активная)"));
+        assert!(lines[2].contains("(активная)"));
     }
 }

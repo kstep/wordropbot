@@ -8,7 +8,7 @@ pub const WORDS_PAGE_SIZE: i64 = 20;
 const MAX_MESSAGE_CHARS: usize = 4096;
 const MAX_BAD_LINES: usize = 20;
 
-pub const HELP: &str = "\
+const HELP: &str = "\
 Я помогаю учить слова: присылаю квизы с вариантами перевода.
 
 Чтобы добавить слова, отправь обычное сообщение: по паре «слово перевод» в строке. \
@@ -28,6 +28,61 @@ pub const HELP: &str = "\
 /quiz - прислать открытый квиз заново или получить новый сразу
 /skip - отменить открытый квиз без ошибки
 /help - эта справка";
+
+const PAUSED_NOTE: &str = "Квизы приостановлены. Возобновить: /resume.";
+
+/// The help message, which also names how many words a quiz needs.
+pub struct Help {
+    /// `quiz.options`: a quiz needs that many words with different translations.
+    pub quiz_options: usize,
+    pub paused: bool,
+}
+
+impl fmt::Display for Help {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.paused {
+            writeln!(f, "{PAUSED_NOTE}\n")?;
+        }
+        write!(
+            f,
+            "{HELP}\n\nКвизы начнутся, когда в коллекции будет минимум {} слов с разными переводами.",
+            self.quiz_options
+        )
+    }
+}
+
+/// Added to an import reply when no word can be asked yet.
+pub struct NotEnoughWords {
+    pub quiz_options: usize,
+}
+
+impl fmt::Display for NotEnoughWords {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Квизы пока не начнутся: добавь слов, чтобы в коллекции было минимум {} слов с разными переводами.",
+            self.quiz_options
+        )
+    }
+}
+
+/// Reply to a command that needs an active collection when there is none.
+pub struct NoActiveCollection {
+    pub has_collections: bool,
+}
+
+impl fmt::Display for NoActiveCollection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.has_collections {
+            f.write_str("Активная коллекция не выбрана. Выбери её через /collection.")
+        } else {
+            f.write_str(
+                "Активной коллекции нет. Создай её командой /collection new <название> \
+                 или подключись по коду: /collection <КОД>.",
+            )
+        }
+    }
+}
 
 /// Writes `text`, cutting it with an ellipsis if it exceeds Telegram's message limit.
 fn write_truncated(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
@@ -294,6 +349,11 @@ mod tests {
 
     #[test]
     fn help_documents_every_command() {
+        let help = Help {
+            quiz_options: 3,
+            paused: false,
+        }
+        .to_string();
         for cmd in [
             "/collection",
             "/words",
@@ -306,7 +366,50 @@ mod tests {
             "/skip",
             "/help",
         ] {
-            assert!(HELP.contains(cmd), "{cmd}");
+            assert!(help.contains(cmd), "{cmd}");
         }
+    }
+
+    #[test]
+    fn help_names_minimum_word_count() {
+        let help = Help {
+            quiz_options: 4,
+            paused: false,
+        }
+        .to_string();
+        assert!(help.contains("минимум 4 слов"));
+        assert!(!help.contains("/resume."));
+    }
+
+    #[test]
+    fn paused_help_names_resume() {
+        let help = Help {
+            quiz_options: 3,
+            paused: true,
+        }
+        .to_string();
+        assert!(help.starts_with("Квизы приостановлены"));
+        assert!(help.contains("/resume"));
+    }
+
+    #[test]
+    fn not_enough_words_names_minimum() {
+        let text = NotEnoughWords { quiz_options: 5 }.to_string();
+        assert!(text.contains("минимум 5 слов"));
+    }
+
+    #[test]
+    fn no_active_collection_hints_by_ownership() {
+        let none = NoActiveCollection {
+            has_collections: false,
+        }
+        .to_string();
+        let others = NoActiveCollection {
+            has_collections: true,
+        }
+        .to_string();
+        assert!(none.contains("/collection new"));
+        assert!(others.contains("Выбери"));
+        assert!(!others.contains("/collection new"));
     }
 }

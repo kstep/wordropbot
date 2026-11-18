@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::Rng;
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use crate::config::Config;
 use crate::ids::{MessageId, QuizId, UserId, WordId};
@@ -78,6 +78,8 @@ pub enum DispatchOutcome {
     NoEligibleWords,
     Blocked,
     Failed,
+    /// The user paused or rescheduled after being picked as due.
+    NotDue,
 }
 
 pub struct QuizService<S> {
@@ -101,6 +103,33 @@ impl<S: QuizSender> QuizService<S> {
 
     pub fn tick_interval(&self) -> Duration {
         Duration::from_secs(self.config.schedule.tick_seconds)
+    }
+
+    /// Whether the user has any word a quiz can be built for.
+    pub async fn has_eligible_words(
+        &self,
+        user: UserId,
+        now: Timestamp,
+    ) -> Result<bool, sqlx::Error> {
+        let candidates = self.storage.candidates(user).await?;
+        let mut rng = StdRng::from_os_rng();
+        Ok(ChosenQuiz::choose(&candidates, &self.config, now, &mut rng).is_some())
+    }
+
+    /// Scheduler path of `dispatch`: pause and schedule are checked again because
+    /// they can change between listing due users and sending. `/quiz` skips this.
+    pub async fn dispatch_due(
+        &self,
+        user: UserId,
+        now: Timestamp,
+        rng: &mut StdRng,
+    ) -> Result<DispatchOutcome, sqlx::Error> {
+        match self.storage.get_user(user).await? {
+            Some(row) if !row.paused && row.next_quiz_at <= now => {
+                self.dispatch(user, now, rng).await
+            }
+            _ => Ok(DispatchOutcome::NotDue),
+        }
     }
 
     pub async fn dispatch(
@@ -142,6 +171,7 @@ impl<S: QuizSender> QuizService<S> {
                 self.storage.delete_quiz(quiz_id).await?;
                 match error {
                     SendError::Blocked => {
+                        tracing::info!(%user, "user blocked the bot, pausing quizzes");
                         self.storage.set_paused(user, true, now).await?;
                         Ok(DispatchOutcome::Blocked)
                     }
