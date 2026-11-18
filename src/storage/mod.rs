@@ -10,7 +10,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 pub use collections::{CancelledQuiz, Collection, CollectionSummary};
-pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, OpenQuiz};
+pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, HardWord, OpenQuiz};
 pub use users::User;
 pub use words::{ImportSummary, WordView};
 
@@ -61,4 +61,20 @@ impl Storage {
 /// Reports a stored value that violates a domain invariant as a decode error.
 fn decode_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> sqlx::Error {
     sqlx::Error::Decode(Box::new(e))
+}
+
+#[cfg(test)]
+mod testing {
+    use crate::ids::{MessageId, UserId};
+    use crate::time::Timestamp;
+
+    pub fn ts(secs: i64) -> Timestamp {
+        Timestamp::from_secs(secs)
+    }
+    pub fn uid(id: i64) -> UserId {
+        UserId(id)
+    }
+    pub fn mid(id: i32) -> MessageId {
+        MessageId(id)
+    }
 }
