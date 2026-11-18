@@ -1,12 +1,37 @@
-use super::Storage;
+use sqlx::Row;
+use sqlx::sqlite::SqliteRow;
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+use super::{Storage, decode_err};
+use crate::period::Period;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
     pub id: i64,
-    pub period_secs: i64,
+    pub period: Period,
     pub paused: bool,
     pub next_quiz_at: i64,
     pub active_collection_id: Option<i64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("stored period {0} is out of range")]
+struct BadStoredPeriod(i64);
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for User {
+    fn from_row(row: &'r SqliteRow) -> Result<User, sqlx::Error> {
+        let secs: i64 = row.try_get("period_secs")?;
+        let period = u64::try_from(secs)
+            .ok()
+            .and_then(Period::from_secs)
+            .ok_or_else(|| decode_err(BadStoredPeriod(secs)))?;
+        Ok(User {
+            id: row.try_get("id")?,
+            period,
+            paused: row.try_get("paused")?,
+            next_quiz_at: row.try_get("next_quiz_at")?,
+            active_collection_id: row.try_get("active_collection_id")?,
+        })
+    }
 }
 
 impl Storage {
@@ -14,7 +39,7 @@ impl Storage {
     pub async fn ensure_user(
         &self,
         id: i64,
-        default_period_secs: i64,
+        default_period: Period,
         now: i64,
     ) -> Result<User, sqlx::Error> {
         sqlx::query(
@@ -22,7 +47,7 @@ impl Storage {
              ON CONFLICT(id) DO NOTHING",
         )
         .bind(id)
-        .bind(default_period_secs)
+        .bind(default_period.as_secs())
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -40,14 +65,14 @@ impl Storage {
     }
 
     /// Returns whether a quiz is open; the next quiz is rescheduled only if none is.
-    pub async fn set_period(&self, id: i64, secs: i64, now: i64) -> Result<bool, sqlx::Error> {
+    pub async fn set_period(&self, id: i64, period: Period, now: i64) -> Result<bool, sqlx::Error> {
         let mut tx = self.begin_write().await?;
         let open = has_open_quiz(&mut tx, id).await?;
         sqlx::query(
             "UPDATE users SET period_secs = ?1, \
              next_quiz_at = CASE WHEN ?2 THEN next_quiz_at ELSE ?3 + ?1 END WHERE id = ?4",
         )
-        .bind(secs)
+        .bind(period.as_secs())
         .bind(open)
         .bind(now)
         .bind(id)
@@ -122,7 +147,10 @@ mod tests {
         let s = Storage::in_memory().await;
         s.ensure_user(1, period(86400), 100).await.unwrap();
         s.set_period(1, period(60), 200).await.unwrap();
-        assert_eq!(s.ensure_user(1, period(86400), 300).await.unwrap().period, period(60));
+        assert_eq!(
+            s.ensure_user(1, period(86400), 300).await.unwrap().period,
+            period(60)
+        );
     }
 
     #[tokio::test]

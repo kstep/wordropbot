@@ -1,9 +1,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use crate::period::parse_period;
+use crate::period::Period;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -52,10 +52,8 @@ pub struct QuizConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct ScheduleConfig {
-    #[serde(deserialize_with = "de_period")]
-    pub default_period: u64,
-    #[serde(deserialize_with = "de_period")]
-    pub min_period: u64,
+    pub default_period: Period,
+    pub min_period: Period,
     pub tick_seconds: u64,
 }
 
@@ -74,15 +72,6 @@ pub struct Config {
     pub quiz: QuizConfig,
     pub schedule: ScheduleConfig,
     pub limits: LimitsConfig,
-}
-
-fn de_period<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    let s = String::deserialize(d)?;
-    parse_period(&s).ok_or_else(|| {
-        serde::de::Error::custom(format!(
-            "invalid duration {s:?}, expected e.g. \"30m\", \"2h\", \"1d\""
-        ))
-    })
 }
 
 impl Config {

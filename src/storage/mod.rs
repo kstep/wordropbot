@@ -53,3 +53,8 @@ impl Storage {
         Storage { pool }
     }
 }
+
+/// Reports a stored value that violates a domain invariant as a decode error.
+fn decode_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> sqlx::Error {
+    sqlx::Error::Decode(Box::new(e))
+}

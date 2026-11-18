@@ -1,34 +1,68 @@
-/// Parses `<digits><s|m|h|d>` into seconds; `None` for zero, overflow or bad syntax.
-pub fn parse_period(s: &str) -> Option<u64> {
-    let s = s.trim().to_ascii_lowercase();
-    let unit = s.chars().last()?;
-    let mult: u64 = match unit {
-        's' => 1,
-        'm' => 60,
-        'h' => 3600,
-        'd' => 86400,
-        _ => return None,
-    };
-    let digits = &s[..s.len() - 1];
-    // `u64::from_str` would accept a leading '+', so check the digits explicitly.
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let n: u64 = digits.parse().ok()?;
-    if n == 0 {
-        return None;
-    }
-    n.checked_mul(mult)
+use std::fmt;
+use std::str::FromStr;
+use std::time::Duration;
+
+use serde::{Deserialize, Deserializer};
+
+/// A positive whole number of seconds that fits in `i64`, the type SQLite stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Period(i64);
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ParsePeriodError {
+    #[error("invalid period: {0}")]
+    Invalid(String),
+    #[error("period must be longer than zero")]
+    Zero,
+    #[error("period must be a whole number of seconds")]
+    SubSecond,
+    #[error("period is too large")]
+    TooLarge,
 }
 
-/// Formats seconds using the largest unit that divides them evenly.
-pub fn format_period(secs: u64) -> String {
-    for (mult, unit) in [(86400, "d"), (3600, "h"), (60, "m")] {
-        if secs != 0 && secs.is_multiple_of(mult) {
-            return format!("{}{unit}", secs / mult);
-        }
+impl Period {
+    /// `None` for zero or more than `i64::MAX`.
+    pub fn from_secs(secs: u64) -> Option<Period> {
+        i64::try_from(secs).ok().filter(|&s| s > 0).map(Period)
     }
-    format!("{secs}s")
+
+    pub fn as_secs(self) -> i64 {
+        self.0
+    }
+}
+
+impl FromStr for Period {
+    type Err = ParsePeriodError;
+
+    fn from_str(s: &str) -> Result<Period, ParsePeriodError> {
+        let text = s.trim().to_ascii_lowercase();
+        let duration = humantime::parse_duration(&text)
+            .map_err(|e| ParsePeriodError::Invalid(e.to_string()))?;
+        if duration.is_zero() {
+            return Err(ParsePeriodError::Zero);
+        }
+        if duration.subsec_nanos() != 0 {
+            return Err(ParsePeriodError::SubSecond);
+        }
+        Period::from_secs(duration.as_secs()).ok_or(ParsePeriodError::TooLarge)
+    }
+}
+
+impl fmt::Display for Period {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            humantime::format_duration(Duration::from_secs(self.0 as u64))
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for Period {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Period, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 #[cfg(test)]
@@ -76,7 +110,11 @@ mod tests {
     fn display_roundtrips() {
         for secs in [1, 60, 90, 5400, 86400, 604800, 2_630_016] {
             let period = Period::from_secs(secs).unwrap();
-            assert_eq!(period.to_string().parse::<Period>().unwrap(), period, "{period}");
+            assert_eq!(
+                period.to_string().parse::<Period>().unwrap(),
+                period,
+                "{period}"
+            );
         }
     }
 }

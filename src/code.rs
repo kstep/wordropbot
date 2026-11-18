@@ -1,42 +1,75 @@
+use std::fmt;
+use std::str::FromStr;
+
 use rand::{CryptoRng, Rng};
 
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const HALF: usize = 4;
 
-/// Random collection code like `K7QM-3XPA`. Needs a CSPRNG because the code is the only
-/// credential for joining a collection.
-pub fn generate_code<R: CryptoRng + Rng + ?Sized>(rng: &mut R) -> String {
-    let mut code = String::with_capacity(2 * HALF + 1);
-    for i in 0..2 * HALF {
-        if i == HALF {
-            code.push('-');
-        }
-        code.push(ALPHABET[rng.random_range(0..ALPHABET.len())] as char);
-    }
-    code
+/// Collection code in canonical `XXXX-XXXX` form; the only way to build one is
+/// `generate` or `FromStr`, so the format always holds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Code(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ParseCodeError {
+    #[error("code must have 8 characters")]
+    InvalidLength,
+    #[error("code contains a character outside the alphabet")]
+    InvalidCharacter,
 }
 
-/// Canonical `XXXX-XXXX` form of user input; case and the dash are ignored.
-pub fn normalize_code(input: &str) -> Option<String> {
-    let chars: Vec<char> = input
-        .trim()
-        .chars()
-        .filter(|&c| c != '-')
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    if chars.len() != 2 * HALF
-        || !chars
+impl Code {
+    /// Needs a CSPRNG because the code is the only credential for joining a collection.
+    pub fn generate<R: CryptoRng + Rng + ?Sized>(rng: &mut R) -> Code {
+        let mut code = String::with_capacity(2 * HALF + 1);
+        for i in 0..2 * HALF {
+            if i == HALF {
+                code.push('-');
+            }
+            code.push(ALPHABET[rng.random_range(0..ALPHABET.len())] as char);
+        }
+        Code(code)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Code {
+    type Err = ParseCodeError;
+
+    /// Case, surrounding whitespace and the dash are ignored.
+    fn from_str(input: &str) -> Result<Code, ParseCodeError> {
+        let chars: Vec<char> = input
+            .trim()
+            .chars()
+            .filter(|&c| c != '-')
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        if chars.len() != 2 * HALF {
+            return Err(ParseCodeError::InvalidLength);
+        }
+        if !chars
             .iter()
             .all(|&c| c.is_ascii() && ALPHABET.contains(&(c as u8)))
-    {
-        return None;
+        {
+            return Err(ParseCodeError::InvalidCharacter);
+        }
+        let (a, b) = chars.split_at(HALF);
+        Ok(Code(format!(
+            "{}-{}",
+            a.iter().collect::<String>(),
+            b.iter().collect::<String>()
+        )))
     }
-    let (a, b) = chars.split_at(HALF);
-    Some(format!(
-        "{}-{}",
-        a.iter().collect::<String>(),
-        b.iter().collect::<String>()
-    ))
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 #[cfg(test)]
@@ -53,7 +86,12 @@ mod tests {
         let code = Code::generate(&mut rng);
         assert_eq!(code.as_str().len(), 9);
         assert_eq!(&code.as_str()[4..5], "-");
-        assert!(code.as_str().replace('-', "").chars().all(|c| ALPHABET.contains(c)));
+        assert!(
+            code.as_str()
+                .replace('-', "")
+                .chars()
+                .all(|c| ALPHABET.contains(c))
+        );
     }
 
     #[test]
@@ -68,7 +106,11 @@ mod tests {
             assert_eq!(s.parse::<Code>(), Err(ParseCodeError::InvalidLength), "{s}");
         }
         for s in ["O7QM-3XPA", "K1QM-3XPA", "K7QM-3XP!", "\u{132}7QM-3XPA"] {
-            assert_eq!(s.parse::<Code>(), Err(ParseCodeError::InvalidCharacter), "{s}");
+            assert_eq!(
+                s.parse::<Code>(),
+                Err(ParseCodeError::InvalidCharacter),
+                "{s}"
+            );
         }
     }
 
