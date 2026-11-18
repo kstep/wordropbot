@@ -57,7 +57,7 @@ type Notice = Option<&'static str>;
 #[derive(Clone, Copy)]
 struct Press {
     user: UserId,
-    message: Option<TgMessageId>,
+    message: TgMessageId,
 }
 
 struct WordsView {
@@ -103,27 +103,24 @@ impl Handlers {
     }
 
     pub async fn on_callback(&self, query: CallbackQuery) {
-        let private = query
-            .message
-            .as_ref()
-            .is_some_and(|m| m.chat().is_private());
-        let notice = match i64::try_from(query.from.id.0) {
-            Ok(raw_user) if private => {
-                // `id()` covers inaccessible messages too, so their edits are not lost.
-                let press = Press {
-                    user: UserId(raw_user),
-                    message: query.message.as_ref().map(|m| m.id()),
-                };
-                match self.handle_callback(press, query.data.as_deref()).await {
-                    Ok(notice) => notice,
-                    Err(error) => {
-                        tracing::error!(user = %press.user, %error, "callback handler failed");
-                        Some(APOLOGY)
-                    }
-                }
-            }
-            // Group or inline-mode buttons are not ours; the button still needs an answer.
+        // `id()` covers inaccessible messages too, so their edits are not lost.
+        let press = match (&query.message, i64::try_from(query.from.id.0)) {
+            (Some(message), Ok(user)) if message.chat().is_private() => Some(Press {
+                user: UserId(user),
+                message: message.id(),
+            }),
             _ => None,
+        };
+        let notice = match press {
+            Some(press) => match self.handle_callback(press, query.data.as_deref()).await {
+                Ok(notice) => notice,
+                Err(error) => {
+                    tracing::error!(user = %press.user, %error, "callback handler failed");
+                    Some(APOLOGY)
+                }
+            },
+            // Group or inline-mode buttons are not ours; the button still needs an answer.
+            None => None,
         };
         let mut answer = self.bot.answer_callback_query(query.id.clone());
         if let Some(text) = notice {
@@ -433,17 +430,7 @@ impl Handlers {
             .answer_quiz(quiz, press.user, index, Timestamp::now())
             .await?;
         match AnswerResult::new(&outcome) {
-            Some(result) => {
-                // The answer is already stored, so a failed edit must not ask for a retry.
-                let text = result.to_string();
-                if let Err(error) = self.edit(press, text.clone(), None).await {
-                    tracing::warn!(user = %press.user, %error, "showing quiz result failed");
-                    if self.say(press.user, text).await.is_err() {
-                        return Ok(Some("Ответ засчитан, но показать результат не получилось."));
-                    }
-                }
-                Ok(None)
-            }
+            Some(result) => Ok(self.show_committed(press, result.to_string()).await),
             None => Ok(Some("Этот квиз уже закрыт.")),
         }
     }
@@ -487,9 +474,9 @@ impl Handlers {
         for quiz in cancelled {
             self.drop_keyboard(quiz.user_id, quiz.message_id).await;
         }
-        self.edit(press, "Ты вышел из коллекции.".into(), None)
-            .await?;
-        Ok(None)
+        Ok(self
+            .show_committed(press, "Ты вышел из коллекции.".into())
+            .await)
     }
 
     async fn remove_confirm(&self, press: Press, id: WordId) -> Reply<Notice> {
@@ -503,8 +490,7 @@ impl Handlers {
         for quiz in cancelled {
             self.drop_keyboard(quiz.user_id, quiz.message_id).await;
         }
-        self.edit(press, "Слово удалено.".into(), None).await?;
-        Ok(None)
+        Ok(self.show_committed(press, "Слово удалено.".into()).await)
     }
 
     async fn words_page(&self, press: Press, page: i64) -> Reply<Notice> {
@@ -522,10 +508,11 @@ impl Handlers {
     }
 
     async fn dismiss(&self, press: Press) -> Reply<Notice> {
-        if let Some(message) = press.message {
-            // Deleting is cosmetic: a failure only leaves the stale buttons in place.
-            let _ = self.bot.delete_message(ChatId(press.user.0), message).await;
-        }
+        // Deleting is cosmetic: a failure only leaves the stale buttons in place.
+        let _ = self
+            .bot
+            .delete_message(ChatId(press.user.0), press.message)
+            .await;
         Ok(Some("Отменено."))
     }
 
@@ -599,19 +586,29 @@ impl Handlers {
         Ok(())
     }
 
-    /// Replaces the pressed message (or sends a new one if there is none); no keyboard removes the old one.
+    /// Shows the result of a change that is already committed. A failed edit must not
+    /// reach the apology path, since a retry would be wrong: send a new message instead.
+    async fn show_committed(&self, press: Press, text: String) -> Notice {
+        let Err(error) = self.edit(press, text.clone(), None).await else {
+            return None;
+        };
+        tracing::warn!(user = %press.user, %error, "editing message with result failed");
+        match self.say(press.user, text).await {
+            Ok(()) => None,
+            Err(_) => Some("Готово, но показать результат не получилось."),
+        }
+    }
+
+    /// Replaces the pressed message; no keyboard removes the old one.
     async fn edit(
         &self,
         press: Press,
         text: String,
         keyboard: Option<InlineKeyboardMarkup>,
     ) -> Reply {
-        let Some(message) = press.message else {
-            return self.say_with(press.user, text, keyboard).await;
-        };
         let request = self
             .bot
-            .edit_message_text(ChatId(press.user.0), message, text);
+            .edit_message_text(ChatId(press.user.0), press.message, text);
         let result = match keyboard {
             Some(keyboard) => request.reply_markup(keyboard).await,
             None => request.await,
