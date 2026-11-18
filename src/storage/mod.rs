@@ -32,6 +32,10 @@ impl Storage {
         Ok(Storage { pool })
     }
 
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     /// Takes the write lock up front: a deferred transaction that reads and then
     /// writes fails with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` does not retry.
     async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
