@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rand::Rng;
 use rand::rngs::StdRng;
@@ -7,6 +8,7 @@ use rand::rngs::StdRng;
 use crate::config::Config;
 use crate::ids::{MessageId, QuizId, UserId, WordId};
 use crate::quiz::QuizOptions;
+use crate::selection::Weights;
 use crate::storage::{Candidate, Storage};
 use crate::time::Timestamp;
 
@@ -41,7 +43,31 @@ impl ChosenQuiz {
         now: Timestamp,
         rng: &mut R,
     ) -> Option<ChosenQuiz> {
-        todo!()
+        let mut weights: Vec<f64> = candidates
+            .iter()
+            .map(|c| config.selection.word_weight(&c.answers, now))
+            .collect();
+        // Options are built only for the picked word; a word that cannot get them is
+        // zeroed and the pick repeated, which equals picking among eligible words only.
+        loop {
+            let index = weights.iter().copied().collect::<Weights>().pick(rng)?;
+            let candidate = &candidates[index];
+            let pool: Vec<String> = candidates
+                .iter()
+                .filter(|other| other.collection_id == candidate.collection_id)
+                .flat_map(|other| other.translations.iter().cloned())
+                .collect();
+            match QuizOptions::new(&candidate.translations, &pool, config.quiz.options, rng) {
+                Some(options) => {
+                    return Some(ChosenQuiz {
+                        word_id: candidate.word_id,
+                        term: candidate.term.clone(),
+                        options,
+                    });
+                }
+                None => weights[index] = 0.0,
+            }
+        }
     }
 }
 
@@ -69,13 +95,63 @@ impl<S: QuizSender> QuizService<S> {
         }
     }
 
+    pub async fn due_users(&self, now: Timestamp) -> Result<Vec<UserId>, sqlx::Error> {
+        self.storage.due_users(now).await
+    }
+
+    pub fn tick_interval(&self) -> Duration {
+        Duration::from_secs(self.config.schedule.tick_seconds)
+    }
+
     pub async fn dispatch(
         &self,
         user: UserId,
         now: Timestamp,
         rng: &mut StdRng,
     ) -> Result<DispatchOutcome, sqlx::Error> {
-        todo!()
+        if self.storage.open_quiz(user).await?.is_some() {
+            return Ok(DispatchOutcome::AlreadyOpen);
+        }
+        let candidates = self.storage.candidates(user).await?;
+        let Some(chosen) = ChosenQuiz::choose(&candidates, &self.config, now, rng) else {
+            return Ok(DispatchOutcome::NoEligibleWords);
+        };
+        let Some(quiz_id) = self
+            .storage
+            .create_quiz(
+                user,
+                chosen.word_id,
+                chosen.options.options(),
+                chosen.options.correct_index(),
+                now,
+            )
+            .await?
+        else {
+            return Ok(DispatchOutcome::AlreadyOpen);
+        };
+        let sent = self
+            .sender
+            .send_quiz(user, quiz_id, &chosen.term, chosen.options.options())
+            .await;
+        match sent {
+            Ok(message_id) => {
+                self.storage.set_quiz_message(quiz_id, message_id).await?;
+                Ok(DispatchOutcome::Sent)
+            }
+            Err(error) => {
+                self.storage.delete_quiz(quiz_id).await?;
+                match error {
+                    SendError::Blocked => {
+                        self.storage.set_paused(user, true, now).await?;
+                        Ok(DispatchOutcome::Blocked)
+                    }
+                    SendError::Other(message) => {
+                        tracing::warn!(%user, %message, "sending quiz failed");
+                        Ok(DispatchOutcome::Failed)
+                    }
+                }
+            }
+        }
     }
 }
 

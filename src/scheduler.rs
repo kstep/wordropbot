@@ -1,8 +1,9 @@
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tokio::sync::watch;
+use tokio::time::MissedTickBehavior;
 
-use crate::service::{QuizSender, QuizService};
+use crate::service::{DispatchOutcome, QuizSender, QuizService};
 use crate::time::Timestamp;
 
 pub struct Scheduler<S> {
@@ -16,11 +17,37 @@ impl<S: QuizSender> Scheduler<S> {
 
     /// Returns the number of quizzes sent.
     pub async fn tick(&self, now: Timestamp, rng: &mut StdRng) -> Result<usize, sqlx::Error> {
-        todo!()
+        let mut sent = 0;
+        for user in self.service.due_users(now).await? {
+            match self.service.dispatch(user, now, rng).await {
+                Ok(DispatchOutcome::Sent) => sent += 1,
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%user, %error, "quiz dispatch failed"),
+            }
+        }
+        Ok(sent)
     }
 
-    pub async fn run(self, shutdown: watch::Receiver<bool>) {
-        todo!()
+    /// Ticks until `shutdown` turns true or its sender is dropped.
+    pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
+        let mut rng = StdRng::from_os_rng();
+        let mut interval = tokio::time::interval(self.service.tick_interval());
+        // A slow tick should not be followed by a burst of catch-up ticks.
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(error) = self.tick(Timestamp::now(), &mut rng).await {
+                        tracing::error!(%error, "scheduler tick failed");
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -206,5 +233,17 @@ mod tests {
         let f = fixture_with_words(2, 4).await;
         f.sender.fail(1, SendError::Other("x".into()));
         assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_stops_on_shutdown_signal() {
+        let f = fixture_with_words(1, 4).await;
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(f.scheduler.run(rx));
+        tx.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("run did not stop")
+            .unwrap();
     }
 }
