@@ -2,7 +2,6 @@ mod collections;
 mod users;
 
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
@@ -33,7 +32,8 @@ impl Storage {
     /// would otherwise get its own empty database.
     #[cfg(test)]
     pub async fn in_memory() -> Storage {
-        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+        let options = "sqlite::memory:"
+            .parse::<SqliteConnectOptions>()
             .unwrap()
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
