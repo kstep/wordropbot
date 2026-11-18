@@ -29,6 +29,22 @@ pub const HELP: &str = "\
 /skip - отменить открытый квиз без ошибки
 /help - эта справка";
 
+/// Writes `text`, cutting it with an ellipsis if it exceeds Telegram's message limit.
+fn write_truncated(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
+    match text.char_indices().nth(MAX_MESSAGE_CHARS) {
+        Some(_) => {
+            // Keep room for the ellipsis so the whole message fits the limit.
+            let keep = text
+                .char_indices()
+                .nth(MAX_MESSAGE_CHARS - 1)
+                .map_or(text.len(), |(i, _)| i);
+            f.write_str(&text[..keep])?;
+            f.write_str("…")
+        }
+        None => f.write_str(text),
+    }
+}
+
 /// One page of the `/words` listing.
 pub struct WordsPage<'a> {
     pub words: &'a [WordView],
@@ -43,18 +59,7 @@ impl fmt::Display for WordsPage<'_> {
             // Writing to a String cannot fail.
             let _ = write!(text, "\n{} — {}", word.term, word.translations.join(", "));
         }
-        match text.char_indices().nth(MAX_MESSAGE_CHARS) {
-            Some((cut, _)) => {
-                // Keep room for the ellipsis so the whole message fits the limit.
-                let keep = text
-                    .char_indices()
-                    .nth(MAX_MESSAGE_CHARS - 1)
-                    .map_or(cut, |(i, _)| i);
-                f.write_str(&text[..keep])?;
-                f.write_str("…")
-            }
-            None => f.write_str(&text),
-        }
+        write_truncated(f, &text)
     }
 }
 
@@ -116,11 +121,12 @@ impl<'a> AnswerResult<'a> {
 impl fmt::Display for AnswerResult<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mark = if self.is_correct { "✅" } else { "❌" };
-        write!(f, "{mark} {} — {}", self.term, self.translations.join(", "))?;
+        let mut text = format!("{mark} {} — {}", self.term, self.translations.join(", "));
         if !self.is_correct {
-            write!(f, " (ты выбрал: {})", self.chosen)?;
+            // Writing to a String cannot fail.
+            let _ = write!(text, " (ты выбрал: {})", self.chosen);
         }
-        Ok(())
+        write_truncated(f, &text)
     }
 }
 
@@ -218,6 +224,19 @@ mod tests {
             "❌ run — бежать, управлять (ты выбрал: груша)"
         );
         assert!(AnswerResult::new(&AnswerOutcome::Closed).is_none());
+    }
+
+    #[test]
+    fn long_answer_result_fits_telegram_limit() {
+        let outcome = AnswerOutcome::Answered {
+            is_correct: false,
+            term: "щ".repeat(3000),
+            translations: vec!["ж".repeat(3000)],
+            chosen: "ы".into(),
+        };
+        let text = AnswerResult::new(&outcome).unwrap().to_string();
+        assert_eq!(text.chars().count(), 4096);
+        assert!(text.ends_with('…'));
     }
 
     #[test]
