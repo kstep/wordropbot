@@ -1,0 +1,18 @@
+[package]
+name = "wordropbot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+teloxide = { version = "0.17", features = ["macros", "throttle"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+unicode-normalization = "0.1"
