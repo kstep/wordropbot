@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use tokio::signal::unix::{SignalKind, signal};
@@ -9,6 +10,7 @@ use wordropbot::bot::BotApp;
 use wordropbot::config::Config;
 use wordropbot::storage::Storage;
 
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONFIG: &str = "config.toml";
 
 struct Args {
@@ -60,45 +62,68 @@ async fn run() -> anyhow::Result<()> {
     let app = BotApp::new(storage.clone(), config);
     let token = app.shutdown_token();
     let (stop, stopped) = watch::channel(false);
-    let scheduler = tokio::spawn(app.scheduler().run(stopped));
+    let mut scheduler = tokio::spawn(app.scheduler().run(stopped));
     let mut dispatcher = tokio::spawn(app.run());
     tracing::info!("bot started");
 
-    let early_exit = tokio::select! {
-        _ = sigterm.recv() => { tracing::info!("SIGTERM received, shutting down"); None }
-        _ = sigint.recv() => { tracing::info!("SIGINT received, shutting down"); None }
-        // The dispatcher fails at start without Telegram; keep running only if it runs.
-        result = &mut dispatcher => Some(result),
-    };
+    let mut dispatcher_result = None;
+    let mut scheduler_result = None;
+    // The dispatcher fails at start without Telegram; keep running only if it runs.
+    tokio::select! {
+        _ = sigterm.recv() => tracing::info!("SIGTERM received, shutting down"),
+        _ = sigint.recv() => tracing::info!("SIGINT received, shutting down"),
+        result = &mut dispatcher => dispatcher_result = Some(result),
+        result = &mut scheduler => scheduler_result = Some(result),
+    }
+    let signalled = dispatcher_result.is_none() && scheduler_result.is_none();
+    let scheduler_early = scheduler_result.is_some();
     // Receivers may already be gone if the scheduler stopped on its own.
     let _ = stop.send(true);
-    let signalled = early_exit.is_none();
-    let outcome = match early_exit {
-        Some(result) => result,
-        None => match token.shutdown() {
-            // A dispatcher that dies while shutting down never completes `done`.
-            Ok(done) => tokio::select! {
-                _ = done => dispatcher.await,
-                result = &mut dispatcher => result,
-            },
-            // Not polling updates yet (or any more): nothing to wait for.
-            Err(_) => {
-                dispatcher.abort();
-                dispatcher.await
-            }
-        },
+    // Telegram can swallow a shutdown request, so the whole stop is bounded.
+    let stopping = async {
+        if dispatcher_result.is_none() {
+            dispatcher_result = Some(match token.shutdown() {
+                // A dispatcher that dies while shutting down never completes `done`.
+                Ok(done) => tokio::select! {
+                    _ = done => (&mut dispatcher).await,
+                    result = &mut dispatcher => result,
+                },
+                // Not polling updates yet (or any more): nothing to wait for.
+                Err(_) => {
+                    dispatcher.abort();
+                    (&mut dispatcher).await
+                }
+            });
+        }
+        if scheduler_result.is_none() {
+            scheduler_result = Some((&mut scheduler).await);
+        }
     };
-    if let Err(error) = scheduler.await {
-        tracing::error!(%error, "scheduler task failed");
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, stopping)
+        .await
+        .is_err()
+    {
+        tracing::warn!(timeout = ?SHUTDOWN_TIMEOUT, "shutdown timed out, aborting tasks");
+        dispatcher.abort();
+        scheduler.abort();
     }
     storage.close().await;
-    match outcome {
-        Ok(Ok(())) if signalled => Ok(()),
-        Ok(Ok(())) => bail!("telegram dispatcher stopped unexpectedly"),
-        Ok(Err(error)) => bail!("telegram dispatcher failed: {error}"),
+    if let Some(Err(error)) = &scheduler_result
+        && !scheduler_early
+    {
+        tracing::error!(%error, "scheduler task failed");
+    }
+    match (scheduler_result, dispatcher_result) {
+        (Some(Ok(())), _) if scheduler_early => bail!("scheduler stopped unexpectedly"),
+        (Some(Err(error)), _) if scheduler_early => bail!("scheduler task failed: {error}"),
+        (_, Some(Ok(Ok(())))) if signalled => Ok(()),
+        (_, Some(Ok(Ok(())))) => bail!("telegram dispatcher stopped unexpectedly"),
+        (_, Some(Ok(Err(error)))) => bail!("telegram dispatcher failed: {error}"),
         // Aborting is how an idle dispatcher is stopped on a signal.
-        Err(error) if error.is_cancelled() && signalled => Ok(()),
-        Err(error) => bail!("telegram dispatcher task failed: {error}"),
+        (_, Some(Err(error))) if error.is_cancelled() && signalled => Ok(()),
+        (_, Some(Err(error))) => bail!("telegram dispatcher task failed: {error}"),
+        // Only a signal gets here; the stop timed out before the dispatcher finished.
+        (_, None) => Ok(()),
     }
 }
 

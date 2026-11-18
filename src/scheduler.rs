@@ -15,10 +15,19 @@ impl<S: QuizSender> Scheduler<S> {
         Scheduler { service }
     }
 
-    /// Returns the number of quizzes sent.
-    pub async fn tick(&self, now: Timestamp, rng: &mut StdRng) -> Result<usize, sqlx::Error> {
+    /// Returns the number of quizzes sent; stops walking users once `shutdown` is true.
+    pub async fn tick(
+        &self,
+        now: Timestamp,
+        rng: &mut StdRng,
+        shutdown: &watch::Receiver<bool>,
+    ) -> Result<usize, sqlx::Error> {
         let mut sent = 0;
         for user in self.service.due_users(now).await? {
+            // A long walk over users must not delay shutdown.
+            if *shutdown.borrow() {
+                break;
+            }
             match self.service.dispatch(user, now, rng).await {
                 Ok(DispatchOutcome::Sent) => sent += 1,
                 Ok(_) => {}
@@ -41,7 +50,7 @@ impl<S: QuizSender> Scheduler<S> {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(error) = self.tick(Timestamp::now(), &mut rng).await {
+                    if let Err(error) = self.tick(Timestamp::now(), &mut rng, &shutdown).await {
                         tracing::error!(%error, "scheduler tick failed");
                     }
                 }
@@ -115,6 +124,7 @@ mod tests {
         sender: FakeSender,
         scheduler: Scheduler<FakeSender>,
         collection: CollectionId,
+        running: watch::Receiver<bool>,
     }
 
     fn ts(secs: i64) -> Timestamp {
@@ -164,6 +174,7 @@ mod tests {
             sender,
             scheduler: Scheduler::new(service),
             collection,
+            running: watch::channel(false).1,
         };
         f.add_words(words).await;
         f
@@ -172,7 +183,13 @@ mod tests {
     #[tokio::test]
     async fn sends_due_quiz_and_stores_message() {
         let f = fixture_with_words(1, 4).await;
-        assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 1);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(
             f.s.open_quiz(UserId(1)).await.unwrap().unwrap().message_id,
             Some(FAKE_MESSAGE_ID)
@@ -182,9 +199,15 @@ mod tests {
     #[tokio::test]
     async fn waits_for_answer_before_next_quiz() {
         let f = fixture_with_words(1, 4).await;
-        f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap();
+        f.scheduler
+            .tick(ts(100), &mut f.rng(), &f.running)
+            .await
+            .unwrap();
         assert_eq!(
-            f.scheduler.tick(ts(100_000), &mut f.rng()).await.unwrap(),
+            f.scheduler
+                .tick(ts(100_000), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
             0
         );
         assert_eq!(f.sender.sent().len(), 1);
@@ -196,7 +219,13 @@ mod tests {
         for id in 100..400 {
             f.s.ensure_user(UserId(id), period(), ts(0)).await.unwrap();
         }
-        assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 1);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(
             f.s.get_user(UserId(100))
                 .await
@@ -210,16 +239,34 @@ mod tests {
     #[tokio::test]
     async fn quiz_arrives_after_words_appear() {
         let f = fixture_with_words(1, 1).await;
-        assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 0);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            0
+        );
         f.add_words(4).await;
-        assert_eq!(f.scheduler.tick(ts(130), &mut f.rng()).await.unwrap(), 1);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(130), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn transient_failure_leaves_no_open_quiz() {
         let f = fixture_with_words(1, 4).await;
         f.sender.fail(1, SendError::Other("timeout".into()));
-        assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 0);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            0
+        );
         assert!(f.s.open_quiz(UserId(1)).await.unwrap().is_none());
         assert_eq!(f.s.due_users(ts(100)).await.unwrap(), [UserId(1)]);
     }
@@ -228,7 +275,10 @@ mod tests {
     async fn blocked_user_is_paused() {
         let f = fixture_with_words(1, 4).await;
         f.sender.fail(1, SendError::Blocked);
-        f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap();
+        f.scheduler
+            .tick(ts(100), &mut f.rng(), &f.running)
+            .await
+            .unwrap();
         assert!(f.s.get_user(UserId(1)).await.unwrap().unwrap().paused);
     }
 
@@ -236,7 +286,27 @@ mod tests {
     async fn one_failure_does_not_stop_others() {
         let f = fixture_with_words(2, 4).await;
         f.sender.fail(1, SendError::Other("x".into()));
-        assert_eq!(f.scheduler.tick(ts(100), &mut f.rng()).await.unwrap(), 1);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &f.running)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_stops_walking_users_after_shutdown() {
+        let f = fixture_with_words(2, 4).await;
+        let (_tx, stopped) = watch::channel(true);
+        assert_eq!(
+            f.scheduler
+                .tick(ts(100), &mut f.rng(), &stopped)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(f.sender.sent().is_empty());
     }
 
     #[tokio::test]
