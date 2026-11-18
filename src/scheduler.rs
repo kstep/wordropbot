@@ -95,6 +95,8 @@ mod tests {
     struct FakeState {
         sent: Vec<(UserId, String)>,
         cleared: Vec<(UserId, MessageId)>,
+        /// Signalled after each successful send, to stop in mid-walk.
+        stop_after_send: Option<watch::Sender<bool>>,
         failures: HashMap<UserId, SendError>,
     }
 
@@ -108,6 +110,10 @@ mod tests {
 
         fn sent(&self) -> Vec<(UserId, String)> {
             self.0.lock().unwrap().sent.clone()
+        }
+
+        fn stop_after_send(&self, stop: watch::Sender<bool>) {
+            self.0.lock().unwrap().stop_after_send = Some(stop);
         }
 
         fn cleared(&self) -> Vec<(UserId, MessageId)> {
@@ -128,6 +134,9 @@ mod tests {
                 Some(error) => Err(error.clone()),
                 None => {
                     state.sent.push((user, term.to_owned()));
+                    if let Some(stop) = &state.stop_after_send {
+                        let _ = stop.send(true);
+                    }
                     Ok(FAKE_MESSAGE_ID)
                 }
             };
@@ -376,18 +385,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tick_stops_walking_users_after_shutdown() {
+    async fn shutdown_between_users_leaves_second_user_due() {
         let fixture = fixture_with_words(2, 4).await;
-        let (_stop, stopped) = watch::channel(true);
+        let (stop, stopped) = watch::channel(false);
+        fixture.sender.stop_after_send(stop);
         assert_eq!(
             fixture
                 .scheduler
                 .tick(ts(100), &mut fixture.rng(), &stopped)
                 .await
                 .unwrap(),
-            0
+            1
         );
-        assert!(fixture.sender.sent().is_empty());
+        let sent = fixture.sender.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, UserId(1));
+        assert!(
+            fixture
+                .storage
+                .open_quiz(UserId(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fixture.storage.due_users(ts(100)).await.unwrap(),
+            [UserId(2)]
+        );
     }
 
     #[tokio::test]

@@ -342,15 +342,24 @@ impl Handlers {
         if report.pairs.is_empty() {
             reply.push_str("\n\n");
             reply.push_str(IMPORT_FORMAT);
-        } else if !self
-            .service
-            .has_eligible_words(user.id, Timestamp::now())
-            .await?
-        {
-            let hint = NotEnoughWords {
-                quiz_options: self.config.quiz.options,
-            };
-            reply.push_str(&format!("\n\n{hint}"));
+        } else {
+            // The import is saved, so a failed check only costs the hint.
+            match self
+                .service
+                .has_eligible_words(user.id, Timestamp::now())
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let hint = NotEnoughWords {
+                        quiz_options: self.config.quiz.options,
+                    };
+                    reply.push_str(&format!("\n\n{hint}"));
+                }
+                Err(error) => {
+                    tracing::warn!(user = %user.id, %error, "checking eligible words after import failed");
+                }
+            }
         }
         self.say(user.id, reply).await
     }
@@ -485,12 +494,16 @@ impl Handlers {
         }
         // Refresh the "(активная)" mark. The choice is saved, so a failed
         // refresh is not an error.
-        let collections = self.storage.list_collections(press.user).await?;
-        let view = View::collections(&collections);
-        if let Err(error) = self.edit(press, view.text, view.keyboard).await {
+        if let Err(error) = self.refresh_collections(press).await {
             tracing::warn!(user = %press.user, %error, "refreshing collection list failed");
         }
         Ok(Some("Коллекция выбрана."))
+    }
+
+    async fn refresh_collections(&self, press: Press) -> Reply {
+        let collections = self.storage.list_collections(press.user).await?;
+        let view = View::collections(&collections);
+        self.edit(press, view.text, view.keyboard).await
     }
 
     async fn leave_ask(&self, press: Press, id: CollectionId) -> Reply<Notice> {

@@ -31,6 +31,22 @@ const HELP: &str = "\
 
 pub const PAUSED_NOTE: &str = "Квизы приостановлены. Возобновить: /resume.";
 
+/// A number of words with the matching Russian noun form: 1 слово, 2 слова,
+/// 5 слов, 11 слов, 21 слово.
+struct WordCount(usize);
+
+impl fmt::Display for WordCount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let noun = match (self.0 % 100, self.0 % 10) {
+            (11..=14, _) => "слов",
+            (_, 1) => "слово",
+            (_, 2..=4) => "слова",
+            _ => "слов",
+        };
+        write!(formatter, "{} {noun}", self.0)
+    }
+}
+
 /// The help message, which also names how many words a quiz needs.
 pub struct Help {
     /// `quiz.options`: a quiz needs that many words with different
@@ -46,8 +62,8 @@ impl fmt::Display for Help {
         }
         write!(
             formatter,
-            "{HELP}\n\nКвизы начнутся, когда в коллекции будет минимум {} слов с разными переводами.",
-            self.quiz_options
+            "{HELP}\n\nКвизы начнутся, когда в коллекции будет минимум {} с разными переводами.",
+            WordCount(self.quiz_options)
         )
     }
 }
@@ -61,8 +77,8 @@ impl fmt::Display for NotEnoughWords {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "Квизы пока не начнутся: добавь слов, чтобы в коллекции было минимум {} слов с разными переводами.",
-            self.quiz_options
+            "Квизы пока не начнутся: добавь слов, чтобы в коллекции было минимум {} с разными переводами.",
+            WordCount(self.quiz_options)
         )
     }
 }
@@ -381,13 +397,28 @@ mod tests {
     }
 
     #[test]
+    fn word_count_declines_in_russian() {
+        for (count, expected) in [
+            (1, "1 слово"),
+            (2, "2 слова"),
+            (3, "3 слова"),
+            (5, "5 слов"),
+            (11, "11 слов"),
+            (21, "21 слово"),
+            (22, "22 слова"),
+        ] {
+            assert_eq!(WordCount(count).to_string(), expected);
+        }
+    }
+
+    #[test]
     fn help_names_minimum_word_count() {
         let help = Help {
             quiz_options: 4,
             paused: false,
         }
         .to_string();
-        assert!(help.contains("минимум 4 слов"));
+        assert!(help.contains("минимум 4 слова с разными"));
         assert!(!help.contains("/resume."));
     }
 
@@ -405,7 +436,7 @@ mod tests {
     #[test]
     fn not_enough_words_names_minimum() {
         let text = NotEnoughWords { quiz_options: 5 }.to_string();
-        assert!(text.contains("минимум 5 слов"));
+        assert!(text.contains("минимум 5 слов с разными"));
     }
 
     #[test]
