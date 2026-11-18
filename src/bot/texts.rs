@@ -1,6 +1,7 @@
 use std::fmt::{self, Write as _};
 
 use crate::{
+    bot::page::Page,
     config::{LimitsConfig, MAX_MESSAGE_CHARS},
     storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView},
 };
@@ -146,7 +147,7 @@ impl fmt::Display for WordLine<'_> {
 /// One page of the `/words` listing.
 pub struct WordsPage<'a> {
     pub words: &'a [WordView],
-    pub page: i64,
+    pub page: Page,
     pub total_pages: i64,
 }
 
@@ -297,7 +298,7 @@ mod tests {
             .collect();
         let text = WordsPage {
             words: &words,
-            page: i64::MAX,
+            page: Page::new(i64::MAX),
             total_pages: i64::MAX,
         }
         .to_string();
@@ -335,7 +336,7 @@ mod tests {
         }];
         let text = WordsPage {
             words: &words,
-            page: 1,
+            page: Page::FIRST,
             total_pages: 1,
         }
         .to_string();

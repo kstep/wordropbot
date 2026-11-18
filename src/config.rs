@@ -2,6 +2,7 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 
 use serde::Deserialize;
@@ -60,12 +61,34 @@ pub struct QuizConfig {
     pub options: usize,
 }
 
+/// Positive time between scheduler ticks, given in whole seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "u64")]
+pub struct TickInterval(Duration);
+
+impl TickInterval {
+    pub fn as_duration(self) -> Duration {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for TickInterval {
+    type Error = &'static str;
+
+    fn try_from(seconds: u64) -> Result<TickInterval, &'static str> {
+        match seconds {
+            0 => Err("schedule.tick_seconds must be > 0"),
+            seconds => Ok(TickInterval(Duration::from_secs(seconds))),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct ScheduleConfig {
     pub default_period: Period,
     pub min_period: Period,
-    pub tick_seconds: u64,
+    pub tick_seconds: TickInterval,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,7 +133,7 @@ impl Default for ScheduleConfig {
         ScheduleConfig {
             default_period: Period::from_secs(86_400).expect("1d is a valid period"),
             min_period: Period::from_secs(60).expect("1m is a valid period"),
-            tick_seconds: 30,
+            tick_seconds: TickInterval(Duration::from_secs(30)),
         }
     }
 }
@@ -196,10 +219,6 @@ impl Config {
             (
                 (2..=8).contains(&self.quiz.options),
                 "quiz.options must be in 2..=8",
-            ),
-            (
-                self.schedule.tick_seconds > 0,
-                "schedule.tick_seconds must be > 0",
             ),
             (
                 self.schedule.default_period >= self.schedule.min_period,
@@ -366,7 +385,10 @@ max_pending_updates_per_user = 16
         assert_eq!(config.quiz.options, 3);
         assert_eq!(config.schedule.default_period.as_secs(), 86_400);
         assert_eq!(config.schedule.min_period.as_secs(), 60);
-        assert_eq!(config.schedule.tick_seconds, 30);
+        assert_eq!(
+            config.schedule.tick_seconds.as_duration(),
+            Duration::from_secs(30)
+        );
         assert_eq!(config.limits.max_term_chars, 200);
         assert_eq!(config.limits.max_translation_chars, 200);
         assert_eq!(config.limits.join_attempts_per_minute, 5);

@@ -15,6 +15,32 @@ macro_rules! id_type {
     };
 }
 
+/// SQLite support for a type stored as `$stored` and validated on the way out:
+/// a stored value outside the invariant is a decode error, not a panic.
+macro_rules! validated_sqlite_type {
+    ($name:ty, $stored:ty, $decoded:ty, $convert:expr) => {
+        impl sqlx::Type<sqlx::Sqlite> for $name {
+            fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+                <$stored as sqlx::Type<sqlx::Sqlite>>::type_info()
+            }
+
+            fn compatible(info: &sqlx::sqlite::SqliteTypeInfo) -> bool {
+                <$stored as sqlx::Type<sqlx::Sqlite>>::compatible(info)
+            }
+        }
+
+        impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for $name {
+            fn decode(
+                value: sqlx::sqlite::SqliteValueRef<'r>,
+            ) -> Result<$name, sqlx::error::BoxDynError> {
+                let stored = <$decoded as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
+                Ok($convert(stored)?)
+            }
+        }
+    };
+}
+pub(crate) use validated_sqlite_type;
+
 id_type!(
     /// Telegram user id.
     UserId(i64)

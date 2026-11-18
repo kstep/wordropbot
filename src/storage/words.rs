@@ -121,7 +121,7 @@ impl Storage {
             .await
     }
 
-    /// Words ordered by normalised term, so paging is stable across spelling
+    /// Words ordered by normalized term, so paging is stable across spelling
     /// case.
     pub async fn list_words(
         &self,
@@ -157,7 +157,7 @@ impl Storage {
         Ok(words)
     }
 
-    /// `term` is normalised before the lookup.
+    /// `term` is normalized before the lookup.
     pub async fn find_word(
         &self,
         collection_id: CollectionId,

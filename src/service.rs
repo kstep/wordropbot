@@ -117,39 +117,19 @@ impl ChosenQuiz {
     }
 }
 
+/// What an attempt to send a quiz to the user did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
+    /// A new quiz was sent, or the open one was sent again.
     Sent,
+    /// Another quiz became open first.
     AlreadyOpen,
     NoEligibleWords,
     Blocked,
     Failed,
 }
 
-/// What `/quiz` did for the user.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QuizRequest {
-    /// A new quiz was sent, or the open one was sent again.
-    Sent,
-    Blocked,
-    NoEligibleWords,
-    /// Another quiz became open while this one was being created.
-    Raced,
-    Failed,
-}
-
-impl From<DispatchOutcome> for QuizRequest {
-    fn from(outcome: DispatchOutcome) -> QuizRequest {
-        match outcome {
-            DispatchOutcome::Sent => QuizRequest::Sent,
-            DispatchOutcome::AlreadyOpen => QuizRequest::Raced,
-            DispatchOutcome::NoEligibleWords => QuizRequest::NoEligibleWords,
-            DispatchOutcome::Blocked => QuizRequest::Blocked,
-            DispatchOutcome::Failed => QuizRequest::Failed,
-        }
-    }
-}
-
+#[derive(Clone)]
 pub struct QuizService<S> {
     storage: Storage,
     sender: S,
@@ -170,7 +150,7 @@ impl<S: QuizSender> QuizService<S> {
     }
 
     pub fn tick_interval(&self) -> Duration {
-        Duration::from_secs(self.config.schedule.tick_seconds)
+        self.config.schedule.tick_seconds.as_duration()
     }
 
     /// Whether the user has any word a quiz can be built for.
@@ -205,9 +185,9 @@ impl<S: QuizSender> QuizService<S> {
         user: UserId,
         now: Timestamp,
         rng: &mut StdRng,
-    ) -> Result<QuizRequest, sqlx::Error> {
+    ) -> Result<DispatchOutcome, sqlx::Error> {
         let Some(open) = self.storage.open_quiz(user).await? else {
-            return Ok(self.dispatch(user, now, rng).await?.into());
+            return self.dispatch(user, now, rng).await;
         };
         match self
             .sender
@@ -219,11 +199,11 @@ impl<S: QuizSender> QuizService<S> {
                 if let Some(old_message) = open.message_id {
                     self.sender.clear_keyboard(user, old_message).await;
                 }
-                Ok(QuizRequest::Sent)
+                Ok(DispatchOutcome::Sent)
             }
             // The old quiz stays open: only a quiz that was never delivered is
             // deleted.
-            Err(error) => Ok(self.handle_send_error(user, error, now).await?.into()),
+            Err(error) => self.handle_send_error(user, error, now).await,
         }
     }
 
@@ -626,13 +606,13 @@ mod tests {
             .request_quiz(UserId(1), ts(100), &mut fixture.rng())
             .await
             .unwrap();
-        assert_eq!(first, QuizRequest::Sent);
+        assert_eq!(first, DispatchOutcome::Sent);
         assert!(fixture.sender.cleared().is_empty());
         let second = service
             .request_quiz(UserId(1), ts(101), &mut fixture.rng())
             .await
             .unwrap();
-        assert_eq!(second, QuizRequest::Sent);
+        assert_eq!(second, DispatchOutcome::Sent);
         let sent = fixture.sender.sent();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0], sent[1]);
@@ -652,7 +632,7 @@ mod tests {
             .request_quiz(UserId(1), ts(101), &mut fixture.rng())
             .await
             .unwrap();
-        assert_eq!(outcome, QuizRequest::Blocked);
+        assert_eq!(outcome, DispatchOutcome::Blocked);
         assert!(
             fixture
                 .storage

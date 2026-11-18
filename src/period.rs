@@ -1,10 +1,8 @@
 use std::{fmt, str::FromStr, time::Duration};
 
 use serde::{Deserialize, Deserializer, de::Error as _};
-use sqlx::{
-    error::BoxDynError,
-    sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef},
-};
+
+use crate::ids::validated_sqlite_type;
 
 /// A positive whole number of seconds that fits in `i64`, the type SQLite
 /// stores.
@@ -28,8 +26,7 @@ impl Period {
     pub fn from_secs(secs: u64) -> Option<Period> {
         i64::try_from(secs)
             .ok()
-            .filter(|&secs| secs > 0)
-            .map(Period)
+            .and_then(|secs| Period::try_from(secs).ok())
     }
 
     pub fn as_secs(self) -> i64 {
@@ -84,23 +81,7 @@ impl fmt::Display for Period {
     }
 }
 
-impl sqlx::Type<Sqlite> for Period {
-    fn type_info() -> SqliteTypeInfo {
-        <i64 as sqlx::Type<Sqlite>>::type_info()
-    }
-
-    fn compatible(info: &SqliteTypeInfo) -> bool {
-        <i64 as sqlx::Type<Sqlite>>::compatible(info)
-    }
-}
-
-/// A stored value outside the invariant is a decode error, not a panic.
-impl<'r> sqlx::Decode<'r, Sqlite> for Period {
-    fn decode(value: SqliteValueRef<'r>) -> Result<Period, BoxDynError> {
-        let secs = <i64 as sqlx::Decode<Sqlite>>::decode(value)?;
-        Ok(Period::try_from(secs)?)
-    }
-}
+validated_sqlite_type!(Period, i64, i64, Period::try_from);
 
 impl<'de> Deserialize<'de> for Period {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Period, D::Error> {

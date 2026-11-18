@@ -7,7 +7,6 @@ use crate::{config::SelectionConfig, time::Timestamp};
 
 const SECS_PER_DAY: f64 = 86_400.0;
 
-/// One finished answer to a quiz about a word.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnswerRecord {
     pub answered_at: Timestamp,
@@ -38,7 +37,6 @@ impl SelectionConfig {
     }
 }
 
-/// Relative selection weights of a list of candidates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Weights(Vec<f64>);
 

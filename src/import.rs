@@ -19,7 +19,6 @@ pub struct ParseReport {
     pub bad_lines: Vec<usize>,
 }
 
-const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
 const DASHES: [&str; 3] = ["-", "–", "—"];
 
 /// Comparison form: invisible format characters removed, NFC, lowercase,
@@ -58,10 +57,11 @@ impl FromStr for ParsedPair {
     fn from_str(line: &str) -> Result<ParsedPair, BadLine> {
         // Dashes are searched in the raw line so that `слово - ` is a bad line,
         // not a spaced pair.
-        let dash = DASH_SEPARATORS
+        let dash = DASHES
             .iter()
-            .filter_map(|separator| {
-                line.find(separator)
+            .filter_map(|dash| {
+                let separator = format!(" {dash} ");
+                line.find(&separator)
                     .map(|position| (position, separator.len()))
             })
             .min_by_key(|&(position, _)| position);

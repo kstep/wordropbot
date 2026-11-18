@@ -2,7 +2,10 @@ use std::{fmt, str::FromStr};
 
 use teloxide::types::InlineKeyboardButton;
 
-use crate::ids::{CollectionId, QuizId, WordId};
+use crate::{
+    bot::page::Page,
+    ids::{CollectionId, QuizId, WordId},
+};
 
 /// Button payload. Telegram caps `callback_data` at 64 bytes; the longest
 /// form (`a:<i64>:<usize>`) stays well under that.
@@ -13,8 +16,8 @@ pub enum CallbackAction {
     LeaveAsk(CollectionId),
     LeaveConfirm(CollectionId),
     RemoveConfirm(WordId),
-    WordsPage(i64),
-    CollectionsPage(i64),
+    WordsPage(Page),
+    CollectionsPage(Page),
     Dismiss,
 }
 
@@ -88,8 +91,8 @@ mod tests {
             CallbackAction::LeaveAsk(CollectionId(2)),
             CallbackAction::LeaveConfirm(CollectionId(3)),
             CallbackAction::RemoveConfirm(WordId(i64::MAX)),
-            CallbackAction::WordsPage(4),
-            CallbackAction::CollectionsPage(5),
+            CallbackAction::WordsPage(Page::new(4)),
+            CallbackAction::CollectionsPage(Page::new(5)),
             CallbackAction::Dismiss,
         ] {
             let text = action.to_string();

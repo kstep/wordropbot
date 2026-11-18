@@ -13,6 +13,15 @@ use crate::{
 
 const HARDEST_LIMIT: usize = 10;
 
+/// Restricts `words w` to the collections of user `?1`, and to collection `?2`
+/// when one is given.
+macro_rules! member_words_filter {
+    () => {
+        "JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
+         WHERE (?2 IS NULL OR w.collection_id = ?2) "
+    };
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub word_id: WordId,
@@ -104,7 +113,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     }
 }
 
-/// A candidate together with the normalised term used for tie-breaking.
+/// A candidate together with the normalized term used for tie-breaking.
 struct Loaded {
     candidate: Candidate,
     term_norm: String,
@@ -124,11 +133,11 @@ impl Storage {
         user_id: UserId,
         collection_id: Option<CollectionId>,
     ) -> Result<Vec<Loaded>, sqlx::Error> {
-        let words: Vec<(WordId, CollectionId, String, String)> = sqlx::query_as(
-            "SELECT w.id, w.collection_id, w.term, w.term_norm FROM words w \
-             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
-             WHERE (?2 IS NULL OR w.collection_id = ?2) ORDER BY w.id",
-        )
+        let words: Vec<(WordId, CollectionId, String, String)> = sqlx::query_as(concat!(
+            "SELECT w.id, w.collection_id, w.term, w.term_norm FROM words w ",
+            member_words_filter!(),
+            "ORDER BY w.id",
+        ))
         .bind(user_id)
         .bind(collection_id)
         .fetch_all(&self.pool)
@@ -149,12 +158,11 @@ impl Storage {
             });
         }
 
-        let translations: Vec<(WordId, String)> = sqlx::query_as(
-            "SELECT t.word_id, t.text FROM translations t \
-             JOIN words w ON w.id = t.word_id \
-             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
-             WHERE (?2 IS NULL OR w.collection_id = ?2) ORDER BY t.id",
-        )
+        let translations: Vec<(WordId, String)> = sqlx::query_as(concat!(
+            "SELECT t.word_id, t.text FROM translations t JOIN words w ON w.id = t.word_id ",
+            member_words_filter!(),
+            "ORDER BY t.id",
+        ))
         .bind(user_id)
         .bind(collection_id)
         .fetch_all(&self.pool)
@@ -165,13 +173,12 @@ impl Storage {
             }
         }
 
-        let answers: Vec<(WordId, Timestamp, bool)> = sqlx::query_as(
+        let answers: Vec<(WordId, Timestamp, bool)> = sqlx::query_as(concat!(
             "SELECT q.word_id, q.answered_at, q.is_correct FROM quizzes q \
-             JOIN words w ON w.id = q.word_id \
-             JOIN memberships m ON m.collection_id = w.collection_id AND m.user_id = ?1 \
-             WHERE q.user_id = ?1 AND q.answered_at IS NOT NULL \
-             AND (?2 IS NULL OR w.collection_id = ?2) ORDER BY q.id",
-        )
+             JOIN words w ON w.id = q.word_id ",
+            member_words_filter!(),
+            "AND q.user_id = ?1 AND q.answered_at IS NOT NULL ORDER BY q.id",
+        ))
         .bind(user_id)
         .bind(collection_id)
         .fetch_all(&self.pool)
@@ -1048,6 +1055,11 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_for_user_without_collections() {
+        let fixture = fixture().await;
         assert!(
             !fixture
                 .storage

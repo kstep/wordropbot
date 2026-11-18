@@ -3,6 +3,7 @@ pub mod command;
 pub mod gate;
 mod handlers;
 pub mod limiter;
+pub mod page;
 pub mod texts;
 
 use std::{convert::Infallible, sync::Arc};
@@ -28,7 +29,6 @@ use crate::{
 
 const FORBIDDEN_PREFIX: &str = "Forbidden";
 
-/// The bot behind Telegram's rate limits.
 pub type TelegramBot = Throttle<Bot>;
 
 impl From<RequestError> for SendError {
@@ -59,7 +59,6 @@ impl From<UserId> for ChatId {
     }
 }
 
-/// Sends quizzes to private chats, where the chat id equals the user id.
 #[derive(Clone)]
 pub struct TelegramSender {
     bot: TelegramBot,
@@ -70,26 +69,10 @@ impl TelegramSender {
         TelegramSender { bot }
     }
 
-    /// One option per row.
-    pub fn keyboard(quiz: QuizId, options: &[String]) -> InlineKeyboardMarkup {
+    fn keyboard(quiz: QuizId, options: &[String]) -> InlineKeyboardMarkup {
         InlineKeyboardMarkup::new(options.iter().enumerate().map(|(index, option)| {
             [CallbackAction::Answer { quiz, index }.button(option.as_str())]
         }))
-    }
-
-    async fn send(
-        &self,
-        user: UserId,
-        quiz: QuizId,
-        term: &str,
-        options: &[String],
-    ) -> Result<MessageId, RequestError> {
-        let sent = self
-            .bot
-            .send_message(ChatId::from(user), term.to_owned())
-            .reply_markup(TelegramSender::keyboard(quiz, options))
-            .await?;
-        Ok(MessageId(sent.id.0))
     }
 }
 
@@ -101,7 +84,12 @@ impl QuizSender for TelegramSender {
         term: &str,
         options: &[String],
     ) -> Result<MessageId, SendError> {
-        Ok(self.send(user, quiz, term, options).await?)
+        let sent = self
+            .bot
+            .send_message(ChatId::from(user), term.to_owned())
+            .reply_markup(TelegramSender::keyboard(quiz, options))
+            .await?;
+        Ok(MessageId(sent.id.0))
     }
 
     async fn clear_keyboard(&self, user: UserId, message: MessageId) {
@@ -116,16 +104,15 @@ impl QuizSender for TelegramSender {
 pub struct BotApp {
     bot: TelegramBot,
     dispatcher: Dispatcher<TelegramBot, Infallible, ()>,
-    sender: TelegramSender,
-    storage: Storage,
-    config: Arc<Config>,
+    service: QuizService<TelegramSender>,
 }
 
 impl BotApp {
     pub fn new(storage: Storage, config: Arc<Config>) -> BotApp {
         let bot = Bot::new(&config.telegram.token).throttle(Limits::default());
         let sender = TelegramSender::new(bot.clone());
-        let handlers = Arc::new(Handlers::new(bot.clone(), storage.clone(), config.clone()));
+        let service = QuizService::new(storage.clone(), sender, config.clone());
+        let handlers = Arc::new(Handlers::new(bot.clone(), storage, service.clone(), config));
         let schema = dptree::entry()
             .branch(
                 Update::filter_message()
@@ -152,18 +139,12 @@ impl BotApp {
         BotApp {
             bot,
             dispatcher,
-            sender,
-            storage,
-            config,
+            service,
         }
     }
 
     pub fn scheduler(&self) -> Scheduler<TelegramSender> {
-        Scheduler::new(QuizService::new(
-            self.storage.clone(),
-            self.sender.clone(),
-            self.config.clone(),
-        ))
+        Scheduler::new(self.service.clone())
     }
 
     pub fn shutdown_token(&self) -> ShutdownToken {

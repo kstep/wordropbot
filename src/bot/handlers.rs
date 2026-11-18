@@ -5,7 +5,10 @@ use teloxide::{
     RequestError,
     errors::ApiError,
     prelude::*,
-    types::{CallbackQuery, InlineKeyboardMarkup, Message, MessageId as TgMessageId},
+    types::{
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
+        MessageId as TgMessageId,
+    },
 };
 
 use crate::{
@@ -15,6 +18,7 @@ use crate::{
         command::Command,
         gate::UserGate,
         limiter::JoinLimiter,
+        page::Page,
         texts::{
             AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, PAUSED_NOTE,
             StatsReport, Truncated, WORDS_PAGE_SIZE, WordsPage,
@@ -25,7 +29,7 @@ use crate::{
     ids::{CollectionId, QuizId, UserId, WordId},
     import::ParseReport,
     period::Period,
-    service::{QuizRequest, QuizService},
+    service::{DispatchOutcome, QuizService},
     storage::{
         CancelledQuiz, CollectionError, CollectionName, CollectionNameError, CollectionSummary,
         Storage, User,
@@ -43,7 +47,8 @@ const IMPORT_FORMAT: &str = "\
 const CODE_ATTEMPTS: usize = 5;
 const BUTTON_NAME_CHARS: usize = 30;
 /// Keeps one page within Telegram's limits on text and buttons.
-const COLLECTIONS_PAGE_SIZE: usize = 10;
+const COLLECTIONS_PAGE_SIZE: i64 = 10;
+const NOT_MEMBER_NOTICE: &str = "Ты не участник этой коллекции.";
 const BUSY_NOTICE: &str = "Слишком много запросов, подожди немного.";
 const OPEN_QUIZ_NOTE: &str = "Сейчас открыт квиз: ответь на него, пришли заново через /quiz \
                               или отмени через /skip.";
@@ -76,9 +81,9 @@ struct View {
 
 impl View {
     /// One page of the collection list; the page is clamped to the valid range.
-    fn collections(collections: &[CollectionSummary], page: i64) -> View {
-        let total_pages = collections.len().div_ceil(COLLECTIONS_PAGE_SIZE).max(1) as i64;
-        let page = page.clamp(1, total_pages);
+    fn collections(collections: &[CollectionSummary], page: Page) -> View {
+        let total_pages = Page::count_for(collections.len() as i64, COLLECTIONS_PAGE_SIZE);
+        let page = page.clamped(total_pages);
         let mut text = if total_pages > 1 {
             format!("Твои коллекции, страница {page} из {total_pages}:")
         } else {
@@ -86,9 +91,9 @@ impl View {
         };
         let mut rows = Vec::new();
         let shown = collections
-            .chunks(COLLECTIONS_PAGE_SIZE)
-            .nth(page as usize - 1)
-            .unwrap_or_default();
+            .iter()
+            .skip(page.offset(COLLECTIONS_PAGE_SIZE) as usize)
+            .take(COLLECTIONS_PAGE_SIZE as usize);
         for collection in shown {
             let mark = if collection.is_active {
                 " (активная)"
@@ -105,13 +110,7 @@ impl View {
                 CallbackAction::LeaveAsk(collection.id).button("Выйти"),
             ]);
         }
-        let mut navigation = Vec::new();
-        if page > 1 {
-            navigation.push(CallbackAction::CollectionsPage(page - 1).button("◀"));
-        }
-        if page < total_pages {
-            navigation.push(CallbackAction::CollectionsPage(page + 1).button("▶"));
-        }
+        let navigation = View::navigation(page, total_pages, CallbackAction::CollectionsPage);
         if !navigation.is_empty() {
             rows.push(navigation);
         }
@@ -122,12 +121,25 @@ impl View {
     }
 
     /// The page of the list that shows this collection.
-    fn collections_page_of(collections: &[CollectionSummary], id: CollectionId) -> i64 {
+    fn collections_page_of(collections: &[CollectionSummary], id: CollectionId) -> Page {
         let position = collections
             .iter()
             .position(|collection| collection.id == id)
             .unwrap_or(0);
-        (position / COLLECTIONS_PAGE_SIZE) as i64 + 1
+        Page::new(position as i64 / COLLECTIONS_PAGE_SIZE + 1)
+    }
+
+    /// Buttons to the neighbouring pages that exist.
+    fn navigation(
+        page: Page,
+        total_pages: i64,
+        action: fn(Page) -> CallbackAction,
+    ) -> Vec<InlineKeyboardButton> {
+        let previous = page.previous().map(|page| action(page).button("◀"));
+        let next = page
+            .next_within(total_pages)
+            .map(|page| action(page).button("▶"));
+        previous.into_iter().chain(next).collect()
     }
 
     /// One page of the collection's words; the page is clamped to the valid
@@ -135,7 +147,7 @@ impl View {
     async fn words(
         storage: &Storage,
         collection: CollectionId,
-        page: i64,
+        page: Page,
     ) -> Result<View, sqlx::Error> {
         let total = storage.count_words(collection).await?;
         if total == 0 {
@@ -144,18 +156,12 @@ impl View {
                 keyboard: None,
             });
         }
-        let total_pages = (total + WORDS_PAGE_SIZE - 1) / WORDS_PAGE_SIZE;
-        let page = page.clamp(1, total_pages);
+        let total_pages = Page::count_for(total, WORDS_PAGE_SIZE);
+        let page = page.clamped(total_pages);
         let words = storage
-            .list_words(collection, (page - 1) * WORDS_PAGE_SIZE, WORDS_PAGE_SIZE)
+            .list_words(collection, page.offset(WORDS_PAGE_SIZE), WORDS_PAGE_SIZE)
             .await?;
-        let mut row = Vec::new();
-        if page > 1 {
-            row.push(CallbackAction::WordsPage(page - 1).button("◀"));
-        }
-        if page < total_pages {
-            row.push(CallbackAction::WordsPage(page + 1).button("▶"));
-        }
+        let row = View::navigation(page, total_pages, CallbackAction::WordsPage);
         Ok(View {
             text: WordsPage {
                 words: &words,
@@ -168,7 +174,6 @@ impl View {
     }
 }
 
-/// One method per command and per callback action.
 pub struct Handlers {
     bot: TelegramBot,
     storage: Storage,
@@ -179,9 +184,12 @@ pub struct Handlers {
 }
 
 impl Handlers {
-    pub fn new(bot: TelegramBot, storage: Storage, config: Arc<Config>) -> Handlers {
-        let sender = TelegramSender::new(bot.clone());
-        let service = QuizService::new(storage.clone(), sender, config.clone());
+    pub fn new(
+        bot: TelegramBot,
+        storage: Storage,
+        service: QuizService<TelegramSender>,
+        config: Arc<Config>,
+    ) -> Handlers {
         let limiter = Mutex::new(JoinLimiter::new(config.limits.join_attempts_per_minute));
         let gate = UserGate::new(config.limits.max_pending_updates_per_user);
         Handlers {
@@ -292,8 +300,6 @@ impl Handlers {
         }
     }
 
-    // Commands.
-
     async fn help(&self, user: UserId, paused: bool) -> Reply {
         let help = Help {
             quiz_options: self.config.quiz.options,
@@ -349,7 +355,8 @@ impl Handlers {
     }
 
     async fn collection_join(&self, user: UserId, raw: &str) -> Reply {
-        if !self.limiter().allow(user, Timestamp::now()) {
+        let now = Timestamp::now();
+        if !self.limiter().allow(user, now) {
             return self
                 .say(
                     user,
@@ -358,7 +365,7 @@ impl Handlers {
                 .await;
         }
         let Ok(code): Result<Code, _> = raw.parse() else {
-            self.limiter().record_failure(user, Timestamp::now());
+            self.limiter().record_failure(user, now);
             return self
                 .say(
                     user,
@@ -366,17 +373,13 @@ impl Handlers {
                 )
                 .await;
         };
-        match self
-            .storage
-            .join_collection(user, &code, Timestamp::now())
-            .await
-        {
+        match self.storage.join_collection(user, &code, now).await {
             Ok(Some(collection)) => {
                 let text = format!("Ты в коллекции «{}», она теперь активная.", collection.name);
                 self.say(user, text).await
             }
             Ok(None) => {
-                self.limiter().record_failure(user, Timestamp::now());
+                self.limiter().record_failure(user, now);
                 self.say(user, "Коллекции с таким кодом нет. Проверь код.")
                     .await
             }
@@ -392,7 +395,7 @@ impl Handlers {
         if collections.is_empty() {
             return self.no_collection(user).await;
         }
-        let view = View::collections(&collections, 1);
+        let view = View::collections(&collections, Page::FIRST);
         self.say_with(user, view.text, view.keyboard).await
     }
 
@@ -437,7 +440,7 @@ impl Handlers {
         let Some(collection) = self.require_collection(user).await? else {
             return Ok(());
         };
-        let view = View::words(&self.storage, collection, 1).await?;
+        let view = View::words(&self.storage, collection, Page::FIRST).await?;
         self.say_with(user.id, view.text, view.keyboard).await
     }
 
@@ -520,16 +523,16 @@ impl Handlers {
             .request_quiz(user, Timestamp::now(), &mut rng)
             .await?
         {
-            QuizRequest::Sent | QuizRequest::Blocked => Ok(()),
-            QuizRequest::Raced => self.say(user, "Квиз уже открыт, повтори /quiz.").await,
-            QuizRequest::NoEligibleWords => {
+            DispatchOutcome::Sent | DispatchOutcome::Blocked => Ok(()),
+            DispatchOutcome::AlreadyOpen => self.say(user, "Квиз уже открыт, повтори /quiz.").await,
+            DispatchOutcome::NoEligibleWords => {
                 self.say(
                     user,
                     "Пока недостаточно слов для квиза: добавь ещё слов в активную коллекцию.",
                 )
                 .await
             }
-            QuizRequest::Failed => self.say(user, APOLOGY).await,
+            DispatchOutcome::Failed => self.say(user, APOLOGY).await,
         }
     }
 
@@ -544,8 +547,6 @@ impl Handlers {
         }
     }
 
-    // Button presses.
-
     async fn answer(&self, press: Press, quiz: QuizId, index: usize) -> Reply<Notice> {
         let outcome = self
             .storage
@@ -559,7 +560,7 @@ impl Handlers {
 
     async fn activate(&self, press: Press, id: CollectionId) -> Reply<Notice> {
         if !self.storage.set_active_collection(press.user, id).await? {
-            return Ok(Some("Ты не участник этой коллекции."));
+            return Ok(Some(NOT_MEMBER_NOTICE));
         }
         // Refresh the "(активная)" mark. The choice is saved, so a failed
         // refresh is not an error.
@@ -576,7 +577,7 @@ impl Handlers {
         self.edit(press, view.text, view.keyboard).await
     }
 
-    async fn collections_page(&self, press: Press, page: i64) -> Reply<Notice> {
+    async fn collections_page(&self, press: Press, page: Page) -> Reply<Notice> {
         let collections = self.storage.list_collections(press.user).await?;
         if collections.is_empty() {
             return Ok(Some("У тебя нет коллекций."));
@@ -589,7 +590,7 @@ impl Handlers {
     async fn leave_ask(&self, press: Press, id: CollectionId) -> Reply<Notice> {
         let collections = self.storage.list_collections(press.user).await?;
         let Some(collection) = collections.iter().find(|listed| listed.id == id) else {
-            return Ok(Some("Ты не участник этой коллекции."));
+            return Ok(Some(NOT_MEMBER_NOTICE));
         };
         let text = format!(
             "Выйти из коллекции «{}»? История ответов сохранится, открытый квиз из неё отменится. \
@@ -613,7 +614,7 @@ impl Handlers {
             .leave_collection(press.user, id, Timestamp::now())
             .await?
         else {
-            return Ok(Some("Ты не участник этой коллекции."));
+            return Ok(Some(NOT_MEMBER_NOTICE));
         };
         self.drop_keyboards(&cancelled).await;
         Ok(self
@@ -633,7 +634,7 @@ impl Handlers {
         Ok(self.show_committed(press, "Слово удалено.".into()).await)
     }
 
-    async fn words_page(&self, press: Press, user: User, page: i64) -> Reply<Notice> {
+    async fn words_page(&self, press: Press, user: User, page: Page) -> Reply<Notice> {
         // The active collection always belongs to the user: leaving clears it
         // in the same transaction as the membership.
         let Some(collection) = user.active_collection_id else {
@@ -653,8 +654,6 @@ impl Handlers {
             .await;
         Ok(Some("Отменено."))
     }
-
-    // Helpers.
 
     async fn ensure_user(&self, id: UserId) -> Result<User, sqlx::Error> {
         self.storage
@@ -799,7 +798,7 @@ mod tests {
                 summary(1, "K7QM-3XPA", false),
                 summary(2, "K7QM-3XPB", true),
             ],
-            1,
+            Page::FIRST,
         );
         let lines: Vec<&str> = view.text.lines().collect();
         assert!(!lines[1].contains("(активная)"));
@@ -816,7 +815,7 @@ mod tests {
             .collect();
         let mut reachable = Vec::new();
         for page in 1..=6 {
-            let view = View::collections(&collections, page);
+            let view = View::collections(&collections, Page::new(page));
             assert!(view.text.chars().count() <= 4096, "page {page}");
             let data = callback_data(&view);
             assert!(data.len() <= 100, "page {page}");
@@ -826,7 +825,7 @@ mod tests {
             assert!(reachable.contains(&format!("c:{id}")), "activate {id}");
             assert!(reachable.contains(&format!("l:{id}")), "leave {id}");
         }
-        let last = View::collections(&collections, 99);
+        let last = View::collections(&collections, Page::new(99));
         assert!(callback_data(&last).contains(&"c:59".to_owned()));
     }
 
@@ -834,9 +833,21 @@ mod tests {
     fn activated_collection_keeps_its_page() {
         let collections: Vec<CollectionSummary> =
             (0..25).map(|id| summary(id, "K7QM-3XPA", false)).collect();
-        assert_eq!(View::collections_page_of(&collections, CollectionId(0)), 1);
-        assert_eq!(View::collections_page_of(&collections, CollectionId(9)), 1);
-        assert_eq!(View::collections_page_of(&collections, CollectionId(10)), 2);
-        assert_eq!(View::collections_page_of(&collections, CollectionId(24)), 3);
+        assert_eq!(
+            View::collections_page_of(&collections, CollectionId(0)),
+            Page::new(1)
+        );
+        assert_eq!(
+            View::collections_page_of(&collections, CollectionId(9)),
+            Page::new(1)
+        );
+        assert_eq!(
+            View::collections_page_of(&collections, CollectionId(10)),
+            Page::new(2)
+        );
+        assert_eq!(
+            View::collections_page_of(&collections, CollectionId(24)),
+            Page::new(3)
+        );
     }
 }

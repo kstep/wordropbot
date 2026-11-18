@@ -8,9 +8,11 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::Parser;
+use teloxide::RequestError;
 use tokio::{
     signal::unix::{SignalKind, signal},
     sync::watch,
+    task::JoinError,
     time::timeout,
 };
 use wordropbot::{
@@ -106,22 +108,121 @@ async fn run() -> anyhow::Result<()> {
         scheduler.abort();
     }
     storage.close().await;
-    if let Some(Err(error)) = &scheduler_result
-        && !scheduler_early
-    {
-        tracing::error!(%error, "scheduler task failed");
+    TaskResults {
+        signalled,
+        scheduler_early,
+        scheduler: scheduler_result,
+        dispatcher: dispatcher_result,
     }
-    match (scheduler_result, dispatcher_result) {
-        (Some(Ok(())), _) if scheduler_early => bail!("scheduler stopped unexpectedly"),
-        (Some(Err(error)), _) if scheduler_early => bail!("scheduler task failed: {error}"),
-        (_, Some(Ok(Ok(())))) if signalled => Ok(()),
-        (_, Some(Ok(Ok(())))) => bail!("telegram dispatcher stopped unexpectedly"),
-        (_, Some(Ok(Err(error)))) => bail!("telegram dispatcher failed: {error}"),
-        // Aborting is how an idle dispatcher is stopped on a signal.
-        (_, Some(Err(error))) if error.is_cancelled() && signalled => Ok(()),
-        (_, Some(Err(error))) => bail!("telegram dispatcher task failed: {error}"),
-        // Only a signal gets here; the stop timed out before the dispatcher
-        // finished.
-        (_, None) => Ok(()),
+    .into_exit()
+}
+
+/// How the two tasks ended once the shutdown is over.
+struct TaskResults {
+    signalled: bool,
+    /// The scheduler ended before any shutdown was requested.
+    scheduler_early: bool,
+    scheduler: Option<Result<(), JoinError>>,
+    dispatcher: Option<Result<Result<(), RequestError>, JoinError>>,
+}
+
+impl TaskResults {
+    fn into_exit(self) -> anyhow::Result<()> {
+        let TaskResults {
+            signalled,
+            scheduler_early,
+            scheduler,
+            dispatcher,
+        } = self;
+        if let Some(Err(error)) = &scheduler
+            && !scheduler_early
+        {
+            tracing::error!(%error, "scheduler task failed");
+        }
+        match (scheduler, dispatcher) {
+            (Some(Ok(())), _) if scheduler_early => bail!("scheduler stopped unexpectedly"),
+            (Some(Err(error)), _) if scheduler_early => bail!("scheduler task failed: {error}"),
+            (_, Some(Ok(Ok(())))) if signalled => Ok(()),
+            (_, Some(Ok(Ok(())))) => bail!("telegram dispatcher stopped unexpectedly"),
+            (_, Some(Ok(Err(error)))) => bail!("telegram dispatcher failed: {error}"),
+            // Aborting is how an idle dispatcher is stopped on a signal.
+            (_, Some(Err(error))) if error.is_cancelled() && signalled => Ok(()),
+            (_, Some(Err(error))) => bail!("telegram dispatcher task failed: {error}"),
+            // Only a signal gets here; the stop timed out before the dispatcher
+            // finished.
+            (_, None) => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use teloxide::ApiError;
+
+    use super::*;
+
+    async fn cancelled<T: Send + 'static>() -> Result<T, JoinError> {
+        let handle = tokio::spawn(future::pending::<T>());
+        handle.abort();
+        handle.await
+    }
+
+    fn results(
+        signalled: bool,
+        dispatcher: Option<Result<Result<(), RequestError>, JoinError>>,
+    ) -> TaskResults {
+        TaskResults {
+            signalled,
+            scheduler_early: false,
+            scheduler: Some(Ok(())),
+            dispatcher,
+        }
+    }
+
+    #[tokio::test]
+    async fn signalled_shutdown_exits_cleanly() {
+        let endings = [
+            Some(Ok(Ok(()))),
+            Some(cancelled().await),
+            // The stop timed out before the dispatcher finished.
+            None,
+        ];
+        for dispatcher in endings {
+            assert!(results(true, dispatcher).into_exit().is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_ending_on_its_own_is_error() {
+        let api_error = RequestError::Api(ApiError::BotBlocked);
+        let endings = [
+            (Ok(Ok(())), "stopped unexpectedly"),
+            (Ok(Err(api_error)), "dispatcher failed"),
+            (cancelled().await, "dispatcher task failed"),
+        ];
+        for (dispatcher, expected) in endings {
+            let error = results(false, Some(dispatcher)).into_exit().unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn early_scheduler_end_is_error_whatever_dispatcher_did() {
+        for (scheduler, expected) in [
+            (Ok(()), "scheduler stopped unexpectedly"),
+            (cancelled().await, "scheduler task failed"),
+        ] {
+            let exit = TaskResults {
+                signalled: false,
+                scheduler_early: true,
+                scheduler: Some(scheduler),
+                dispatcher: Some(Ok(Ok(()))),
+            }
+            .into_exit();
+            let error = exit.unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 }

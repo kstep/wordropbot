@@ -1,10 +1,8 @@
 use std::{fmt, str::FromStr};
 
 use rand::{CryptoRng, Rng};
-use sqlx::{
-    error::BoxDynError,
-    sqlite::{Sqlite, SqliteTypeInfo, SqliteValueRef},
-};
+
+use crate::ids::validated_sqlite_type;
 
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const HALF: usize = 4;
@@ -70,23 +68,7 @@ impl FromStr for Code {
     }
 }
 
-impl sqlx::Type<Sqlite> for Code {
-    fn type_info() -> SqliteTypeInfo {
-        <str as sqlx::Type<Sqlite>>::type_info()
-    }
-
-    fn compatible(info: &SqliteTypeInfo) -> bool {
-        <str as sqlx::Type<Sqlite>>::compatible(info)
-    }
-}
-
-/// A stored code in a non-canonical form is a decode error.
-impl<'r> sqlx::Decode<'r, Sqlite> for Code {
-    fn decode(value: SqliteValueRef<'r>) -> Result<Code, BoxDynError> {
-        let raw = <&str as sqlx::Decode<Sqlite>>::decode(value)?;
-        Ok(raw.parse()?)
-    }
-}
+validated_sqlite_type!(Code, str, &str, str::parse::<Code>);
 
 impl fmt::Display for Code {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -100,8 +82,6 @@ mod tests {
 
     use super::*;
 
-    const ALPHABET: &str = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-
     #[test]
     fn generated_code_has_canonical_format() {
         let mut rng = StdRng::seed_from_u64(1);
@@ -112,7 +92,7 @@ mod tests {
             code.as_str()
                 .replace('-', "")
                 .chars()
-                .all(|character| ALPHABET.contains(character))
+                .all(|character| ALPHABET.contains(&(character as u8)))
         );
     }
 
