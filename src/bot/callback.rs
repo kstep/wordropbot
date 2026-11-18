@@ -1,5 +1,7 @@
 use std::{fmt, str::FromStr};
 
+use teloxide::types::InlineKeyboardButton;
+
 use crate::ids::{CollectionId, QuizId, WordId};
 
 /// Button payload. Telegram caps `callback_data` at 64 bytes; the longest
@@ -18,6 +20,13 @@ pub enum CallbackAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("malformed callback data")]
 pub struct ParseCallbackError;
+
+impl CallbackAction {
+    /// An inline button that sends this action back when pressed.
+    pub fn button(self, label: impl Into<String>) -> InlineKeyboardButton {
+        InlineKeyboardButton::callback(label, self.to_string())
+    }
+}
 
 impl fmt::Display for CallbackAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

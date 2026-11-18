@@ -12,7 +12,7 @@ use teloxide::{
     dispatching::{DefaultKey, ShutdownToken},
     errors::ApiError,
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId as TgMessageId},
+    types::{InlineKeyboardMarkup, MessageId as TgMessageId},
     update_listeners,
 };
 
@@ -60,11 +60,7 @@ impl TelegramSender {
     /// One option per row.
     pub fn keyboard(quiz: QuizId, options: &[String]) -> InlineKeyboardMarkup {
         InlineKeyboardMarkup::new(options.iter().enumerate().map(|(index, option)| {
-            let action = CallbackAction::Answer { quiz, index };
-            [InlineKeyboardButton::callback(
-                option.clone(),
-                action.to_string(),
-            )]
+            [CallbackAction::Answer { quiz, index }.button(option.as_str())]
         }))
     }
 

@@ -5,10 +5,7 @@ use teloxide::{
     RequestError,
     errors::ApiError,
     prelude::*,
-    types::{
-        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
-        MessageId as TgMessageId,
-    },
+    types::{CallbackQuery, InlineKeyboardMarkup, Message, MessageId as TgMessageId},
 };
 
 use crate::{
@@ -18,17 +15,19 @@ use crate::{
         command::Command,
         limiter::JoinLimiter,
         texts::{
-            AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, StatsReport,
-            WORDS_PAGE_SIZE, WordsPage,
+            AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, PAUSED_NOTE,
+            StatsReport, WORDS_PAGE_SIZE, WordsPage,
         },
     },
     code::Code,
     config::Config,
-    ids::{CollectionId, MessageId, QuizId, UserId, WordId},
+    ids::{CollectionId, QuizId, UserId, WordId},
     import::ParseReport,
     period::Period,
     service::{QuizRequest, QuizService},
-    storage::{CollectionSummary, Storage},
+    storage::{
+        CancelledQuiz, CollectionName, CollectionNameError, CollectionSummary, Storage, User,
+    },
     time::Timestamp,
 };
 
@@ -87,17 +86,51 @@ impl View {
             ));
             let name: String = collection.name.chars().take(BUTTON_NAME_CHARS).collect();
             rows.push(vec![
-                Handlers::button(
-                    format!("Выбрать «{name}»"),
-                    CallbackAction::Activate(collection.id),
-                ),
-                Handlers::button("Выйти", CallbackAction::LeaveAsk(collection.id)),
+                CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
+                CallbackAction::LeaveAsk(collection.id).button("Выйти"),
             ]);
         }
         View {
             text,
             keyboard: Some(InlineKeyboardMarkup::new(rows)),
         }
+    }
+
+    /// One page of the collection's words; the page is clamped to the valid
+    /// range.
+    async fn words(
+        storage: &Storage,
+        collection: CollectionId,
+        page: i64,
+    ) -> Result<View, sqlx::Error> {
+        let total = storage.count_words(collection).await?;
+        if total == 0 {
+            return Ok(View {
+                text: "В коллекции пока нет слов.".into(),
+                keyboard: None,
+            });
+        }
+        let total_pages = (total + WORDS_PAGE_SIZE - 1) / WORDS_PAGE_SIZE;
+        let page = page.clamp(1, total_pages);
+        let words = storage
+            .list_words(collection, (page - 1) * WORDS_PAGE_SIZE, WORDS_PAGE_SIZE)
+            .await?;
+        let mut row = Vec::new();
+        if page > 1 {
+            row.push(CallbackAction::WordsPage(page - 1).button("◀"));
+        }
+        if page < total_pages {
+            row.push(CallbackAction::WordsPage(page + 1).button("▶"));
+        }
+        Ok(View {
+            text: WordsPage {
+                words: &words,
+                page,
+                total_pages,
+            }
+            .to_string(),
+            keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
+        })
     }
 }
 
@@ -145,13 +178,7 @@ impl Handlers {
             _ => None,
         };
         let notice = match press {
-            Some(press) => match self.handle_callback(press, query.data.as_deref()).await {
-                Ok(notice) => notice,
-                Err(error) => {
-                    tracing::error!(user = %press.user, %error, "callback handler failed");
-                    Some(APOLOGY)
-                }
-            },
+            Some(press) => self.press_notice(press, query.data.as_deref()).await,
             // Group or inline-mode buttons are not ours; the button still needs
             // an answer.
             None => None,
@@ -165,39 +192,39 @@ impl Handlers {
         }
     }
 
-    async fn handle_message(&self, user: UserId, text: Option<&str>) -> Reply {
-        let row = self
-            .storage
-            .ensure_user(user, self.config.schedule.default_period, Timestamp::now())
-            .await?;
+    async fn press_notice(&self, press: Press, data: Option<&str>) -> Notice {
+        self.handle_callback(press, data)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(user = %press.user, %error, "callback handler failed");
+                Some(APOLOGY)
+            })
+    }
+
+    async fn handle_message(&self, user_id: UserId, text: Option<&str>) -> Reply {
+        let user = self.ensure_user(user_id).await?;
         let Some(text) = text else { return Ok(()) };
         let command: Result<Command, _> = text.parse();
         match command {
-            Ok(Command::Start) => self.help(user, row.paused).await,
-            Ok(Command::Help | Command::Unknown) => self.help(user, false).await,
-            Ok(Command::CollectionList) => self.collection_list(user).await,
-            Ok(Command::CollectionNew(name)) => self.collection_new(user, &name).await,
-            Ok(Command::CollectionJoin(raw)) => self.collection_join(user, &raw).await,
+            Ok(Command::Start) => self.help(user.id, user.paused).await,
+            Ok(Command::Help | Command::Unknown) => self.help(user.id, false).await,
+            Ok(Command::CollectionList) => self.collection_list(user.id).await,
+            Ok(Command::CollectionNew(name)) => self.collection_new(user.id, &name).await,
+            Ok(Command::CollectionJoin(raw)) => self.collection_join(user.id, &raw).await,
             Ok(Command::Words) => self.words(user).await,
             Ok(Command::Remove(term)) => self.remove(user, &term).await,
             Ok(Command::Stats) => self.stats(user).await,
-            Ok(Command::Period(raw)) => self.period(user, &raw).await,
-            Ok(Command::Pause) => self.pause(user).await,
-            Ok(Command::Resume) => self.resume(user).await,
-            Ok(Command::Quiz) => self.quiz(user).await,
-            Ok(Command::Skip) => self.skip(user).await,
+            Ok(Command::Period(raw)) => self.period(user.id, &raw).await,
+            Ok(Command::Pause) => self.pause(user.id).await,
+            Ok(Command::Resume) => self.resume(user.id).await,
+            Ok(Command::Quiz) => self.quiz(user.id).await,
+            Ok(Command::Skip) => self.skip(user.id).await,
             Err(_) => self.import_text(user, text).await,
         }
     }
 
     async fn handle_callback(&self, press: Press, data: Option<&str>) -> Reply<Notice> {
-        self.storage
-            .ensure_user(
-                press.user,
-                self.config.schedule.default_period,
-                Timestamp::now(),
-            )
-            .await?;
+        let user = self.ensure_user(press.user).await?;
         let action: Option<CallbackAction> = data.and_then(|data| data.parse().ok());
         let Some(action) = action else {
             return Ok(Some("Эта кнопка больше не работает."));
@@ -208,7 +235,7 @@ impl Handlers {
             CallbackAction::LeaveAsk(id) => self.leave_ask(press, id).await,
             CallbackAction::LeaveConfirm(id) => self.leave_confirm(press, id).await,
             CallbackAction::RemoveConfirm(id) => self.remove_confirm(press, id).await,
-            CallbackAction::WordsPage(page) => self.words_page(press, page).await,
+            CallbackAction::WordsPage(page) => self.words_page(press, user, page).await,
             CallbackAction::Dismiss => self.dismiss(press).await,
         }
     }
@@ -224,20 +251,26 @@ impl Handlers {
     }
 
     async fn collection_new(&self, user: UserId, name: &str) -> Reply {
-        if name.chars().count() > self.config.limits.max_term_chars {
-            let max = self.config.limits.max_term_chars;
-            return self
-                .say(
-                    user,
-                    format!("Название слишком длинное: не больше {max} символов."),
-                )
-                .await;
-        }
+        let max = self.config.limits.max_term_chars;
+        let name = match CollectionName::new(name, max) {
+            Ok(name) => name,
+            Err(CollectionNameError::Empty) => {
+                return self.say(user, "Название не может быть пустым.").await;
+            }
+            Err(CollectionNameError::TooLong { max }) => {
+                return self
+                    .say(
+                        user,
+                        format!("Название слишком длинное: не больше {max} символов."),
+                    )
+                    .await;
+            }
+        };
         for _ in 0..CODE_ATTEMPTS {
             let code = Code::generate(&mut rand::rng());
             let created = self
                 .storage
-                .create_collection(user, name, &code, Timestamp::now())
+                .create_collection(user, name.as_str(), &code, Timestamp::now())
                 .await?;
             if let Some(collection) = created {
                 let text = format!(
@@ -295,9 +328,9 @@ impl Handlers {
         self.say_with(user, view.text, view.keyboard).await
     }
 
-    async fn import_text(&self, user: UserId, text: &str) -> Reply {
-        let Some(collection) = self.active_collection(user).await? else {
-            return self.no_collection(user).await;
+    async fn import_text(&self, user: User, text: &str) -> Reply {
+        let Some(collection) = self.require_collection(user).await? else {
+            return Ok(());
         };
         let report = ParseReport::parse(text, &self.config.limits);
         let summary = self.storage.import_pairs(collection, &report.pairs).await?;
@@ -311,7 +344,7 @@ impl Handlers {
             reply.push_str(IMPORT_FORMAT);
         } else if !self
             .service
-            .has_eligible_words(user, Timestamp::now())
+            .has_eligible_words(user.id, Timestamp::now())
             .await?
         {
             let hint = NotEnoughWords {
@@ -319,23 +352,24 @@ impl Handlers {
             };
             reply.push_str(&format!("\n\n{hint}"));
         }
-        self.say(user, reply).await
+        self.say(user.id, reply).await
     }
 
-    async fn words(&self, user: UserId) -> Reply {
-        match self.words_view(user, 1).await? {
-            Some(view) => self.say_with(user, view.text, view.keyboard).await,
-            None => self.no_collection(user).await,
-        }
+    async fn words(&self, user: User) -> Reply {
+        let Some(collection) = self.require_collection(user).await? else {
+            return Ok(());
+        };
+        let view = View::words(&self.storage, collection, 1).await?;
+        self.say_with(user.id, view.text, view.keyboard).await
     }
 
-    async fn remove(&self, user: UserId, term: &str) -> Reply {
-        let Some(collection) = self.active_collection(user).await? else {
-            return self.no_collection(user).await;
+    async fn remove(&self, user: User, term: &str) -> Reply {
+        let Some(collection) = self.require_collection(user).await? else {
+            return Ok(());
         };
         let Some(word) = self.storage.find_word(collection, term).await? else {
             return self
-                .say(user, "Такого слова нет в активной коллекции.")
+                .say(user.id, "Такого слова нет в активной коллекции.")
                 .await;
         };
         let text = format!(
@@ -343,21 +377,26 @@ impl Handlers {
             word.term
         );
         let keyboard = InlineKeyboardMarkup::new([[
-            Self::button("Удалить", CallbackAction::RemoveConfirm(word.id)),
-            Self::button("Отмена", CallbackAction::Dismiss),
+            CallbackAction::RemoveConfirm(word.id).button("Удалить"),
+            CallbackAction::Dismiss.button("Отмена"),
         ]]);
-        self.say_with(user, text, Some(keyboard)).await
+        self.say_with(user.id, text, Some(keyboard)).await
     }
 
-    async fn stats(&self, user: UserId) -> Reply {
-        let Some(collection) = self.active_collection(user).await? else {
-            return self.no_collection(user).await;
+    async fn stats(&self, user: User) -> Reply {
+        let Some(collection) = self.require_collection(user).await? else {
+            return Ok(());
         };
         let stats = self
             .storage
-            .collection_stats(user, collection, Timestamp::now(), &self.config.selection)
+            .collection_stats(
+                user.id,
+                collection,
+                Timestamp::now(),
+                &self.config.selection,
+            )
             .await?;
-        self.say(user, StatsReport(&stats).to_string()).await
+        self.say(user.id, StatsReport(&stats).to_string()).await
     }
 
     async fn period(&self, user: UserId, raw: &str) -> Reply {
@@ -376,11 +415,7 @@ impl Handlers {
             .storage
             .set_period(user, period, Timestamp::now())
             .await?;
-        let mut text = format!("Период квизов: {period}.");
-        if quiz_open {
-            text.push('\n');
-            text.push_str(OPEN_QUIZ_NOTE);
-        }
+        let text = Self::with_open_quiz_note(format!("Период квизов: {period}."), quiz_open);
         self.say(user, text).await
     }
 
@@ -388,8 +423,7 @@ impl Handlers {
         self.storage
             .set_paused(user, true, Timestamp::now())
             .await?;
-        self.say(user, "Квизы приостановлены. Возобновить: /resume.")
-            .await
+        self.say(user, PAUSED_NOTE).await
     }
 
     async fn resume(&self, user: UserId) -> Reply {
@@ -397,11 +431,7 @@ impl Handlers {
             .storage
             .set_paused(user, false, Timestamp::now())
             .await?;
-        let mut text = String::from("Квизы возобновлены.");
-        if quiz_open {
-            text.push('\n');
-            text.push_str(OPEN_QUIZ_NOTE);
-        }
+        let text = Self::with_open_quiz_note("Квизы возобновлены.".into(), quiz_open);
         self.say(user, text).await
     }
 
@@ -428,7 +458,7 @@ impl Handlers {
     async fn skip(&self, user: UserId) -> Reply {
         match self.storage.skip_quiz(user, Timestamp::now()).await? {
             Some(cancelled) => {
-                self.drop_keyboard(user, cancelled.message_id).await;
+                self.drop_keyboards(&[cancelled]).await;
                 self.say(user, "Квиз пропущен, ошибкой это не считается.")
                     .await
             }
@@ -474,8 +504,8 @@ impl Handlers {
             collection.name
         );
         let keyboard = InlineKeyboardMarkup::new([[
-            Self::button("Выйти", CallbackAction::LeaveConfirm(id)),
-            Self::button("Отмена", CallbackAction::Dismiss),
+            CallbackAction::LeaveConfirm(id).button("Выйти"),
+            CallbackAction::Dismiss.button("Отмена"),
         ]]);
         self.bot
             .send_message(ChatId::from(press.user), text)
@@ -492,9 +522,7 @@ impl Handlers {
         else {
             return Ok(Some("Ты не участник этой коллекции."));
         };
-        for quiz in cancelled {
-            self.drop_keyboard(quiz.user_id, quiz.message_id).await;
-        }
+        self.drop_keyboards(&cancelled).await;
         Ok(self
             .show_committed(press, "Ты вышел из коллекции.".into())
             .await)
@@ -508,17 +536,18 @@ impl Handlers {
         else {
             return Ok(Some("Слово уже удалено или недоступно."));
         };
-        for quiz in cancelled {
-            self.drop_keyboard(quiz.user_id, quiz.message_id).await;
-        }
+        self.drop_keyboards(&cancelled).await;
         Ok(self.show_committed(press, "Слово удалено.".into()).await)
     }
 
-    async fn words_page(&self, press: Press, page: i64) -> Reply<Notice> {
-        match self.words_view(press.user, page).await? {
-            Some(view) => self.edit(press, view.text, view.keyboard).await?,
-            None => return Ok(Some("Активной коллекции нет.")),
-        }
+    async fn words_page(&self, press: Press, user: User, page: i64) -> Reply<Notice> {
+        // The active collection always belongs to the user: leaving clears it
+        // in the same transaction as the membership.
+        let Some(collection) = user.active_collection_id else {
+            return Ok(Some("Активной коллекции нет."));
+        };
+        let view = View::words(&self.storage, collection, page).await?;
+        self.edit(press, view.text, view.keyboard).await?;
         Ok(None)
     }
 
@@ -534,41 +563,20 @@ impl Handlers {
 
     // Helpers.
 
-    /// `None` when the user has no active collection. The page is clamped to
-    /// the valid range.
-    async fn words_view(&self, user: UserId, page: i64) -> Reply<Option<View>> {
-        let Some(collection) = self.active_collection(user).await? else {
-            return Ok(None);
-        };
-        let total = self.storage.count_words(collection).await?;
-        if total == 0 {
-            return Ok(Some(View {
-                text: "В коллекции пока нет слов.".into(),
-                keyboard: None,
-            }));
+    async fn ensure_user(&self, id: UserId) -> Result<User, sqlx::Error> {
+        self.storage
+            .ensure_user(id, self.config.schedule.default_period, Timestamp::now())
+            .await
+    }
+
+    /// The user's active collection. With none, tells the user to pick one and
+    /// returns `None`.
+    async fn require_collection(&self, user: User) -> Reply<Option<CollectionId>> {
+        let collection = user.active_collection_id;
+        if collection.is_none() {
+            self.no_collection(user.id).await?;
         }
-        let total_pages = (total + WORDS_PAGE_SIZE - 1) / WORDS_PAGE_SIZE;
-        let page = page.clamp(1, total_pages);
-        let words = self
-            .storage
-            .list_words(collection, (page - 1) * WORDS_PAGE_SIZE, WORDS_PAGE_SIZE)
-            .await?;
-        let mut row = Vec::new();
-        if page > 1 {
-            row.push(Self::button("◀", CallbackAction::WordsPage(page - 1)));
-        }
-        if page < total_pages {
-            row.push(Self::button("▶", CallbackAction::WordsPage(page + 1)));
-        }
-        Ok(Some(View {
-            text: WordsPage {
-                words: &words,
-                page,
-                total_pages,
-            }
-            .to_string(),
-            keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
-        }))
+        Ok(collection)
     }
 
     /// Tells the user an active collection is needed, hinting at `/collection`
@@ -579,19 +587,18 @@ impl Handlers {
             .await
     }
 
-    async fn active_collection(&self, user: UserId) -> Reply<Option<CollectionId>> {
-        let user = self.storage.get_user(user).await?;
-        Ok(user.and_then(|row| row.active_collection_id))
+    fn with_open_quiz_note(mut text: String, quiz_open: bool) -> String {
+        if quiz_open {
+            text.push('\n');
+            text.push_str(OPEN_QUIZ_NOTE);
+        }
+        text
     }
 
     fn limiter(&self) -> MutexGuard<'_, JoinLimiter> {
         // The limiter holds only counters, so a poisoned lock is still
         // consistent.
         self.limiter.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn button(label: impl Into<String>, action: CallbackAction) -> InlineKeyboardButton {
-        InlineKeyboardButton::callback(label, action.to_string())
     }
 
     async fn say(&self, user: UserId, text: impl Into<String>) -> Reply {
@@ -604,11 +611,11 @@ impl Handlers {
         text: impl Into<String>,
         keyboard: Option<InlineKeyboardMarkup>,
     ) -> Reply {
-        let request = self.bot.send_message(ChatId::from(user), text);
-        match keyboard {
-            Some(keyboard) => request.reply_markup(keyboard).await?,
-            None => request.await?,
-        };
+        let mut request = self.bot.send_message(ChatId::from(user), text);
+        if let Some(keyboard) = keyboard {
+            request = request.reply_markup(keyboard);
+        }
+        request.await?;
         Ok(())
     }
 
@@ -633,28 +640,31 @@ impl Handlers {
         text: String,
         keyboard: Option<InlineKeyboardMarkup>,
     ) -> Reply {
-        let request = self
+        let mut request = self
             .bot
             .edit_message_text(ChatId::from(press.user), press.message, text);
-        let result = match keyboard {
-            Some(keyboard) => request.reply_markup(keyboard).await,
-            None => request.await,
-        };
-        match result {
+        if let Some(keyboard) = keyboard {
+            request = request.reply_markup(keyboard);
+        }
+        match request.await {
             // Paging to the page already shown changes nothing.
             Err(RequestError::Api(ApiError::MessageNotModified)) => Ok(()),
             other => other.map(drop).map_err(Into::into),
         }
     }
 
-    /// The old message may be gone or too old to edit; that is not worth
+    /// The old messages may be gone or too old to edit; that is not worth
     /// failing for.
-    async fn drop_keyboard(&self, user: UserId, message: Option<MessageId>) {
-        let Some(message) = message else { return };
-        let _ = self
-            .bot
-            .edit_message_reply_markup(ChatId::from(user), TgMessageId(message.0))
-            .await;
+    async fn drop_keyboards(&self, cancelled: &[CancelledQuiz]) {
+        for quiz in cancelled {
+            let Some(message) = quiz.message_id else {
+                continue;
+            };
+            let _ = self
+                .bot
+                .edit_message_reply_markup(ChatId::from(quiz.user_id), TgMessageId(message.0))
+                .await;
+        }
     }
 }
 

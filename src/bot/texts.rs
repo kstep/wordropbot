@@ -29,7 +29,7 @@ const HELP: &str = "\
 /skip - отменить открытый квиз без ошибки
 /help - эта справка";
 
-const PAUSED_NOTE: &str = "Квизы приостановлены. Возобновить: /resume.";
+pub const PAUSED_NOTE: &str = "Квизы приостановлены. Возобновить: /resume.";
 
 /// The help message, which also names how many words a quiz needs.
 pub struct Help {

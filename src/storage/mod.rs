@@ -5,7 +5,9 @@ mod words;
 
 use std::{path::Path, time::Duration};
 
-pub use collections::{CancelledQuiz, Collection, CollectionSummary};
+pub use collections::{
+    CancelledQuiz, Collection, CollectionName, CollectionNameError, CollectionSummary,
+};
 pub use quizzes::{AnswerOutcome, Candidate, CollectionStats, HardWord, OpenQuiz};
 use sqlx::{
     Sqlite, SqlitePool, Transaction,

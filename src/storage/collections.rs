@@ -7,6 +7,34 @@ use crate::{
     time::Timestamp,
 };
 
+/// A collection name that is not empty and fits the character limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionName(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CollectionNameError {
+    #[error("collection name is empty")]
+    Empty,
+    #[error("collection name is longer than {max} characters")]
+    TooLong { max: usize },
+}
+
+impl CollectionName {
+    pub fn new(name: &str, max_chars: usize) -> Result<CollectionName, CollectionNameError> {
+        if name.trim().is_empty() {
+            return Err(CollectionNameError::Empty);
+        }
+        if name.chars().count() > max_chars {
+            return Err(CollectionNameError::TooLong { max: max_chars });
+        }
+        Ok(CollectionName(name.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Collection {
     pub id: CollectionId,
@@ -204,6 +232,23 @@ mod tests {
 
     fn code(text: &str) -> Code {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn name_must_be_non_empty_and_within_limit() {
+        assert_eq!(
+            CollectionName::new("Греческий", 9).unwrap().as_str(),
+            "Греческий"
+        );
+        assert_eq!(
+            CollectionName::new("Греческий", 8),
+            Err(CollectionNameError::TooLong { max: 8 })
+        );
+        assert_eq!(CollectionName::new("", 8), Err(CollectionNameError::Empty));
+        assert_eq!(
+            CollectionName::new("  ", 8),
+            Err(CollectionNameError::Empty)
+        );
     }
 
     #[tokio::test]
