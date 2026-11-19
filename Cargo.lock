@@ -2811,6 +2811,7 @@ dependencies = [
  "humantime",
  "rand",
  "serde",
+ "serde_json",
  "sqlx",
  "teloxide",
  "thiserror",

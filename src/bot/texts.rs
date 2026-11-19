@@ -1,4 +1,7 @@
-use std::fmt::{self, Write as _};
+use std::{
+    fmt::{self, Write as _},
+    slice,
+};
 
 use crate::{
     bot::page::Page,
@@ -9,9 +12,8 @@ use crate::{
 pub const WORDS_PAGE_SIZE: u32 = 20;
 
 const MAX_BAD_LINES: usize = 20;
-/// Leaves room for the page header, so all lines of a full page fit one message
-/// and no word is cut off the end.
-const MAX_WORD_LINE_CHARS: usize = 200;
+/// Keeps a full page far below the rich message limit of 32768 characters.
+const MAX_CELL_CHARS: usize = 200;
 
 const HELP: &str = "\
 Я помогаю учить слова: присылаю квизы с вариантами перевода.
@@ -169,24 +171,48 @@ fn write_joined(output: &mut impl fmt::Write, items: &[String]) -> fmt::Result {
     Ok(())
 }
 
-/// One page of the `/words` listing.
-pub fn words_page(words: &[WordView], page: Page, last: Page) -> String {
-    message_text(|output| {
-        write!(
-            output,
-            "Слова, страница {} из {}:",
-            page.number(),
-            last.number()
-        )?;
-        for word in words {
-            output.write_char('\n')?;
-            let mut line = LimitedWriter::new(&mut *output, MAX_WORD_LINE_CHARS);
-            write!(line, "{} — ", word.term)?;
-            write_joined(&mut line, &word.translations)?;
-            line.finish()?;
+/// One page of the `/words` listing in rich HTML: a heading over a table of
+/// terms and their translations.
+pub fn words_html(words: &[WordView], page: Page, last: Page) -> String {
+    let mut html = String::new();
+    // Writing to a String cannot fail.
+    let _ = write!(
+        html,
+        "<h3>Слова, страница {} из {}</h3>\
+         <table><tr><th>Слово</th><th>Перевод</th></tr>",
+        page.number(),
+        last.number()
+    );
+    for word in words {
+        html.push_str("<tr>");
+        push_cell(&mut html, slice::from_ref(&word.term));
+        push_cell(&mut html, &word.translations);
+        html.push_str("</tr>");
+    }
+    html.push_str("</table>");
+    html
+}
+
+/// A table cell with `parts` joined by commas, escaped and cut at
+/// `MAX_CELL_CHARS`.
+fn push_cell(html: &mut String, parts: &[String]) {
+    html.push_str("<td>");
+    let mut characters = parts.iter().enumerate().flat_map(|(index, part)| {
+        let separator = if index > 0 { ", " } else { "" };
+        separator.chars().chain(part.chars())
+    });
+    for character in characters.by_ref().take(MAX_CELL_CHARS) {
+        match character {
+            '&' => html.push_str("&amp;"),
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            _ => html.push(character),
         }
-        Ok(())
-    })
+    }
+    if characters.next().is_some() {
+        html.push('…');
+    }
+    html.push_str("</td>");
 }
 
 impl ImportSummary {
@@ -293,19 +319,45 @@ mod tests {
     }
 
     #[test]
-    fn full_page_of_long_words_shows_every_word() {
-        let long = "щ".repeat(200);
-        let words: Vec<_> = (0..WORDS_PAGE_SIZE)
+    fn words_html_escapes_and_lays_out_table() {
+        let words = [
+            WordView {
+                id: WordId(1),
+                term: "γράφω".into(),
+                translations: vec!["я пишу".into()],
+            },
+            WordView {
+                id: WordId(2),
+                term: "a<b".into(),
+                translations: vec!["x&y".into(), "z".into()],
+            },
+        ];
+        assert_eq!(
+            words_html(&words, Page::FIRST, Page::new(1)),
+            "<h3>Слова, страница 1 из 2</h3>\
+             <table><tr><th>Слово</th><th>Перевод</th></tr>\
+             <tr><td>γράφω</td><td>я пишу</td></tr>\
+             <tr><td>a&lt;b</td><td>x&amp;y, z</td></tr></table>"
+        );
+    }
+
+    #[test]
+    fn long_cells_are_cut() {
+        let words: Vec<WordView> = (0..WORDS_PAGE_SIZE)
             .map(|number| WordView {
                 id: WordId(i64::from(number)),
                 term: format!("слово{number}"),
-                translations: vec![long.clone(); 20],
+                translations: vec!["щ".repeat(200); 20],
             })
             .collect();
-        let text = words_page(&words, Page::new(u32::MAX), Page::new(u32::MAX));
-        assert!(text.chars().count() <= 4096);
+        let html = words_html(&words, Page::FIRST, Page::FIRST);
+        let cell = format!("<td>{}…</td>", "щ".repeat(200));
+        assert_eq!(html.matches(&cell).count(), words.len());
         for number in 0..WORDS_PAGE_SIZE {
-            assert!(text.contains(&format!("\nслово{number} — ")), "{number}");
+            assert!(
+                html.contains(&format!("<td>слово{number}</td>")),
+                "{number}"
+            );
         }
     }
 
@@ -349,18 +401,6 @@ mod tests {
             assert_eq!(text.chars().count(), 4096);
             assert!(text.ends_with('…'));
         }
-    }
-
-    #[test]
-    fn short_words_page_is_not_truncated() {
-        let words = [WordView {
-            id: WordId(1),
-            term: "run".into(),
-            translations: vec!["бежать".into(), "управлять".into()],
-        }];
-        let text = words_page(&words, Page::FIRST, Page::FIRST);
-        assert!(text.contains("run — бежать, управлять"));
-        assert!(!text.contains('…'));
     }
 
     #[test]

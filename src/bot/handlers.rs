@@ -9,6 +9,7 @@ use teloxide::{
     RequestError,
     errors::ApiError,
     prelude::*,
+    requests::JsonRequest,
     types::{
         CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
         MessageId as TgMessageId,
@@ -23,6 +24,7 @@ use crate::{
         gate::UserGate,
         limiter::JoinLimiter,
         page::Page,
+        rich::{EditRichMessage, SendRichMessage},
         texts::{
             self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, write_word_shortage_hint,
         },
@@ -78,10 +80,18 @@ struct Press {
     message: TgMessageId,
 }
 
+/// How the text of a `View` is formatted.
+enum Markup {
+    /// Plain text with these entities.
+    Entities(Vec<MessageEntity>),
+    /// Rich message HTML.
+    RichHtml,
+}
+
 struct View {
     text: String,
     keyboard: Option<InlineKeyboardMarkup>,
-    entities: Vec<MessageEntity>,
+    markup: Markup,
 }
 
 impl View {
@@ -89,15 +99,17 @@ impl View {
         View {
             text: text.into(),
             keyboard: None,
-            entities: Vec::new(),
+            markup: Markup::Entities(Vec::new()),
         }
     }
 
     /// Appends `code` shown in monospace.
     fn push_code(&mut self, code: &str) {
+        let Markup::Entities(entities) = &mut self.markup else {
+            unreachable!("codes are marked in plain views only");
+        };
         let offset = self.text.encode_utf16().count();
-        self.entities
-            .push(MessageEntity::code(offset, code.encode_utf16().count()));
+        entities.push(MessageEntity::code(offset, code.encode_utf16().count()));
         self.text.push_str(code);
     }
 
@@ -183,9 +195,9 @@ impl View {
             .await?;
         let row = View::navigation(page, last, CallbackAction::WordsPage);
         Ok(View {
-            text: texts::words_page(&words, page, last),
+            text: texts::words_html(&words, page, last),
             keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
-            entities: Vec::new(),
+            markup: Markup::RichHtml,
         })
     }
 }
@@ -699,14 +711,23 @@ impl Handlers {
     }
 
     async fn show(&self, user: UserId, view: View) -> Reply {
-        let mut request = self.bot.send_message(ChatId::from(user), view.text);
-        if let Some(keyboard) = view.keyboard {
-            request = request.reply_markup(keyboard);
+        let chat = ChatId::from(user);
+        match view.markup {
+            Markup::Entities(entities) => {
+                let mut request = self.bot.send_message(chat, view.text);
+                if let Some(keyboard) = view.keyboard {
+                    request = request.reply_markup(keyboard);
+                }
+                if !entities.is_empty() {
+                    request = request.entities(entities);
+                }
+                request.await?;
+            }
+            Markup::RichHtml => {
+                let payload = SendRichMessage::new(chat, view.text, view.keyboard);
+                JsonRequest::new(self.bot.inner().clone(), payload).await?;
+            }
         }
-        if !view.entities.is_empty() {
-            request = request.entities(view.entities);
-        }
-        request.await?;
         Ok(())
     }
 
@@ -726,19 +747,29 @@ impl Handlers {
 
     /// Replaces the pressed message; no keyboard removes the old one.
     async fn edit(&self, press: Press, view: View) -> Reply {
-        let mut request =
-            self.bot
-                .edit_message_text(ChatId::from(press.user), press.message, view.text);
-        if let Some(keyboard) = view.keyboard {
-            request = request.reply_markup(keyboard);
-        }
-        if !view.entities.is_empty() {
-            request = request.entities(view.entities);
-        }
-        match request.await {
+        let chat = ChatId::from(press.user);
+        let result = match view.markup {
+            Markup::Entities(entities) => {
+                let mut request = self.bot.edit_message_text(chat, press.message, view.text);
+                if let Some(keyboard) = view.keyboard {
+                    request = request.reply_markup(keyboard);
+                }
+                if !entities.is_empty() {
+                    request = request.entities(entities);
+                }
+                request.await.map(drop)
+            }
+            Markup::RichHtml => {
+                let payload = EditRichMessage::new(chat, press.message, view.text, view.keyboard);
+                JsonRequest::new(self.bot.inner().clone(), payload)
+                    .await
+                    .map(drop)
+            }
+        };
+        match result {
             // Paging to the page already shown changes nothing.
             Err(RequestError::Api(ApiError::MessageNotModified)) => Ok(()),
-            other => other.map(drop).map_err(Into::into),
+            other => other.map_err(Into::into),
         }
     }
 
@@ -838,8 +869,11 @@ mod tests {
             })
             .collect();
         let view = View::collections(&collections, Page::new(1));
-        assert_eq!(view.entities.len(), 2);
-        for entity in &view.entities {
+        let Markup::Entities(entities) = &view.markup else {
+            panic!("collection list must be plain text");
+        };
+        assert_eq!(entities.len(), 2);
+        for entity in entities {
             let code: String = view
                 .text
                 .encode_utf16()

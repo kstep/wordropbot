@@ -4,6 +4,7 @@ pub mod gate;
 mod handlers;
 pub mod limiter;
 pub mod page;
+pub mod rich;
 pub mod texts;
 
 use std::{convert::Infallible, sync::Arc};
