@@ -27,7 +27,8 @@ use crate::{
         page::Page,
         rich::{EditRichMessage, SendRichMessage},
         texts::{
-            self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, write_word_shortage_hint,
+            self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, period_text,
+            write_word_shortage_hint,
         },
     },
     code::Code,
@@ -336,16 +337,17 @@ impl Handlers {
                 if let Some(code) = code {
                     self.collection_join(user.id, &code).await?;
                 }
-                self.help(user.id, user.paused).await
+                self.help(user, user.paused).await
             }
-            Ok(Command::Help | Command::Unknown) => self.help(user.id, false).await,
+            Ok(Command::Help | Command::Unknown) => self.help(user, false).await,
             Ok(Command::CollectionList) => self.collection_list(user.id).await,
             Ok(Command::CollectionNew(name)) => self.collection_new(user.id, &name).await,
             Ok(Command::CollectionJoin(raw)) => self.collection_join(user.id, &raw).await,
             Ok(Command::Words) => self.words(user).await,
             Ok(Command::Remove(term)) => self.remove(user, &term).await,
             Ok(Command::Stats) => self.stats(user).await,
-            Ok(Command::Period(raw)) => self.period(user.id, &raw).await,
+            Ok(Command::Period(None)) => self.show_period(user).await,
+            Ok(Command::Period(Some(raw))) => self.period(user.id, &raw).await,
             Ok(Command::Pause) => self.pause(user.id).await,
             Ok(Command::Resume) => self.resume(user.id).await,
             Ok(Command::Quiz) => self.quiz(user.id).await,
@@ -372,9 +374,21 @@ impl Handlers {
         }
     }
 
-    async fn help(&self, user: UserId, paused: bool) -> Reply {
-        self.say(user, texts::help(self.config.quiz.options, paused))
-            .await
+    async fn help(&self, user: User, paused: bool) -> Reply {
+        let text = texts::help(self.config.quiz.options, user.period, paused);
+        self.say(user.id, text).await
+    }
+
+    async fn show_period(&self, user: User) -> Reply {
+        let mut text = format!(
+            "Квизы приходят раз в {}. Изменить: /period 30m, /period 2h, /period 1d.",
+            period_text(user.period)
+        );
+        if user.paused {
+            text.push('\n');
+            text.push_str(PAUSED_NOTE);
+        }
+        self.say(user.id, text).await
     }
 
     async fn collection_new(&self, user: UserId, name: &str) -> Reply {
@@ -551,11 +565,17 @@ impl Handlers {
         let min = self.config.schedule.min_period;
         if period < min {
             return self
-                .say(user, format!("Период не может быть короче {min}."))
+                .say(
+                    user,
+                    format!("Чаще, чем раз в {}, квизы не приходят.", period_text(min)),
+                )
                 .await;
         }
         let quiz_open = self.storage.set_period(user, period, Utc::now()).await?;
-        let text = Self::with_open_quiz_note(format!("Период квизов: {period}."), quiz_open);
+        let text = Self::with_open_quiz_note(
+            format!("Теперь квизы приходят раз в {}.", period_text(period)),
+            quiz_open,
+        );
         self.say(user, text).await
     }
 

@@ -12,7 +12,7 @@ pub const MENU: [(&str, &str); 10] = [
     ("skip", "Отменить открытый квиз без ошибки"),
     ("stats", "Статистика активной коллекции"),
     ("remove", "Удалить слово: /remove <слово>"),
-    ("period", "Как часто присылать квизы: /period 1d"),
+    ("period", "Как часто приходят квизы; изменить: /period 1d"),
     ("pause", "Приостановить квизы"),
     ("resume", "Возобновить квизы"),
     ("help", "Справка"),
@@ -30,7 +30,8 @@ pub enum Command {
     Words,
     Remove(String),
     Stats,
-    Period(String),
+    /// `/period`, with the new period or alone to show the current one.
+    Period(Option<String>),
     Pause,
     Resume,
     Quiz,
@@ -85,7 +86,7 @@ impl FromStr for Command {
             "words" => Command::Words,
             "remove" => required(Command::Remove),
             "stats" => Command::Stats,
-            "period" => required(Command::Period),
+            "period" => Command::Period((!argument.is_empty()).then(|| argument.to_owned())),
             "pause" => Command::Pause,
             "resume" => Command::Resume,
             "quiz" => Command::Quiz,
@@ -167,7 +168,6 @@ mod tests {
         for text in [
             "/remove",
             "/remove   ",
-            "/period",
             "/collection new",
             "/collection new  ",
         ] {
@@ -181,6 +181,10 @@ mod tests {
             parse("/remove   σπίτι  "),
             Ok(Command::Remove("σπίτι".into()))
         );
-        assert_eq!(parse("/period@bot 2h"), Ok(Command::Period("2h".into())));
+        assert_eq!(
+            parse("/period@bot 2h"),
+            Ok(Command::Period(Some("2h".into())))
+        );
+        assert_eq!(parse("/period"), Ok(Command::Period(None)));
     }
 }

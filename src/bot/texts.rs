@@ -6,6 +6,7 @@ use std::{
 use crate::{
     bot::page::Page,
     config::{LimitsConfig, MAX_MESSAGE_CHARS},
+    period::Period,
     storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView},
 };
 
@@ -41,16 +42,47 @@ pub const PAUSED_NOTE: &str = "Квизы приостановлены. Возо
 /// Russian noun form for a number of words: 1 слово, 2 слова, 5 слов, 11 слов,
 /// 21 слово.
 fn word_noun(count: usize) -> &'static str {
+    plural(count as u64, ["слово", "слова", "слов"])
+}
+
+/// Russian noun form for `count`: `forms` are for 1, 2 and 5.
+fn plural(count: u64, forms: [&'static str; 3]) -> &'static str {
     match (count % 100, count % 10) {
-        (11..=14, _) => "слов",
-        (_, 1) => "слово",
-        (_, 2..=4) => "слова",
-        _ => "слов",
+        (11..=14, _) => forms[2],
+        (_, 1) => forms[0],
+        (_, 2..=4) => forms[1],
+        _ => forms[2],
     }
 }
 
-/// The help message, which also names how many words a quiz needs.
-pub fn help(quiz_options: usize, paused: bool) -> String {
+/// A period in Russian, in the form that follows «раз в»: «1 день»,
+/// «2 часа 30 минут», «1 минуту».
+pub fn period_text(period: Period) -> String {
+    const UNITS: [(u32, [&str; 3]); 4] = [
+        (86_400, ["день", "дня", "дней"]),
+        (3_600, ["час", "часа", "часов"]),
+        (60, ["минуту", "минуты", "минут"]),
+        (1, ["секунду", "секунды", "секунд"]),
+    ];
+    let mut seconds = period.as_secs();
+    let mut text = String::new();
+    for (unit, forms) in UNITS {
+        let count = seconds / unit;
+        seconds %= unit;
+        if count > 0 {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            // Writing to a String cannot fail.
+            let _ = write!(text, "{count} {}", plural(count.into(), forms));
+        }
+    }
+    text
+}
+
+/// The help message, which also names the user's period and how many words a
+/// quiz needs.
+pub fn help(quiz_options: usize, period: Period, paused: bool) -> String {
     let mut text = String::new();
     if paused {
         text.push_str(PAUSED_NOTE);
@@ -59,7 +91,9 @@ pub fn help(quiz_options: usize, paused: bool) -> String {
     // Writing to a String cannot fail.
     let _ = write!(
         text,
-        "{HELP}\n\nКвизы начнутся, когда в коллекции будет минимум {quiz_options} {} с разными переводами.",
+        "{HELP}\n\nКвизы приходят раз в {}, изменить: /period 2h. \
+         Они начнутся, когда в коллекции будет минимум {quiz_options} {} с разными переводами.",
+        period_text(period),
         word_noun(quiz_options)
     );
     text
@@ -495,16 +529,42 @@ mod tests {
         }
     }
 
+    fn period(seconds: u64) -> Period {
+        Period::from_secs(seconds).unwrap()
+    }
+
+    #[test]
+    fn period_reads_in_russian() {
+        for (seconds, expected) in [
+            (1, "1 секунду"),
+            (60, "1 минуту"),
+            (120, "2 минуты"),
+            (300, "5 минут"),
+            (3_600, "1 час"),
+            (9_000, "2 часа 30 минут"),
+            (86_400, "1 день"),
+            (1_814_400, "21 день"),
+            (31_536_000, "365 дней"),
+        ] {
+            assert_eq!(period_text(period(seconds)), expected, "{seconds}");
+        }
+    }
+
+    #[test]
+    fn help_names_period() {
+        assert!(help(3, period(7_200), false).contains("Квизы приходят раз в 2 часа"));
+    }
+
     #[test]
     fn help_names_minimum_word_count() {
-        let text = help(4, false);
+        let text = help(4, period(86_400), false);
         assert!(text.contains("минимум 4 слова с разными"));
         assert!(!text.contains("/resume."));
     }
 
     #[test]
     fn paused_help_names_resume() {
-        let text = help(3, true);
+        let text = help(3, period(86_400), true);
         assert!(text.starts_with("Квизы приостановлены"));
         assert!(text.contains("/resume"));
     }
