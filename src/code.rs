@@ -44,27 +44,25 @@ impl FromStr for Code {
 
     /// Case, surrounding whitespace and the dash are ignored.
     fn from_str(input: &str) -> Result<Code, ParseCodeError> {
-        let chars: Vec<char> = input
+        let symbols = input
             .trim()
             .chars()
             .filter(|&character| character != '-')
-            .map(|character| character.to_ascii_uppercase())
-            .collect();
-        if chars.len() != 2 * HALF {
+            .map(|character| character.to_ascii_uppercase());
+        if symbols.clone().count() != 2 * HALF {
             return Err(ParseCodeError::InvalidLength);
         }
-        if !chars
-            .iter()
-            .all(|&character| character.is_ascii() && ALPHABET.contains(&(character as u8)))
-        {
-            return Err(ParseCodeError::InvalidCharacter);
+        let mut code = String::with_capacity(2 * HALF + 1);
+        for (index, symbol) in symbols.enumerate() {
+            if !u8::try_from(symbol).is_ok_and(|byte| ALPHABET.contains(&byte)) {
+                return Err(ParseCodeError::InvalidCharacter);
+            }
+            if index == HALF {
+                code.push('-');
+            }
+            code.push(symbol);
         }
-        let (head, tail) = chars.split_at(HALF);
-        Ok(Code(format!(
-            "{}-{}",
-            head.iter().collect::<String>(),
-            tail.iter().collect::<String>()
-        )))
+        Ok(Code(code))
     }
 }
 

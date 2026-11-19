@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{borrow::Cow, str::FromStr};
 
 use unicode_normalization::UnicodeNormalization;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
@@ -29,15 +29,26 @@ pub struct Normalized(String);
 
 impl Normalized {
     pub fn new(text: &str) -> Normalized {
-        let lowercase = text
-            .chars()
-            .filter(|character| character.general_category() != GeneralCategory::Format)
-            .nfc()
-            .collect::<String>()
-            .to_lowercase();
-        // Lowercasing can leave sequences that NFC composes further.
-        let composed: String = lowercase.nfc().collect();
-        Normalized(composed.split_whitespace().collect::<Vec<_>>().join(" "))
+        let is_format = |character: char| character.general_category() == GeneralCategory::Format;
+        let visible: Cow<str> = if text.contains(is_format) {
+            Cow::Owned(
+                text.chars()
+                    .filter(|&character| !is_format(character))
+                    .collect(),
+            )
+        } else {
+            Cow::Borrowed(text)
+        };
+        // Whole-string lowercasing: only it turns a word-final sigma into `ς`.
+        let lowercase = visible.to_lowercase();
+        let mut normalized = String::with_capacity(lowercase.len());
+        for word in lowercase.split_whitespace() {
+            if !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.extend(word.nfc());
+        }
+        Normalized(normalized)
     }
 
     pub fn as_str(&self) -> &str {
@@ -210,5 +221,6 @@ mod tests {
         assert_eq!(Normalized::new("  ΣΠΊΤΙ   Μου ").as_str(), "σπίτι μου");
         assert_eq!(Normalized::new("e\u{301}").as_str(), "é");
         assert_ne!(Normalized::new("σπίτι"), Normalized::new("σπιτι"));
+        assert_eq!(Normalized::new("ΛΟΓΟΣ"), Normalized::new("λογος"));
     }
 }
