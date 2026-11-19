@@ -4,7 +4,7 @@ use super::{CancelledQuiz, Storage};
 use crate::{
     config::SelectionConfig,
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
-    import::Normalized,
+    import::NormalizedText,
     selection::AnswerRecord,
     time::Timestamp,
 };
@@ -260,10 +260,10 @@ impl Storage {
         // Options are frozen at creation, but a member may have imported one of
         // them as a translation of this word since.
         let is_correct = chosen_index as i64 == correct_index || {
-            let chosen = Normalized::new(&options[chosen_index]);
+            let chosen = NormalizedText::new(&options[chosen_index]);
             translations
                 .iter()
-                .any(|translation| Normalized::new(translation) == chosen)
+                .any(|translation| NormalizedText::new(translation) == chosen)
         };
         // The write lock has kept the row open since the SELECT above.
         sqlx::query(

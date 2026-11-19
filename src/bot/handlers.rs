@@ -23,8 +23,8 @@ use crate::{
         limiter::JoinLimiter,
         page::Page,
         texts::{
-            AnswerResult, Help, ImportReport, LimitedWriter, NoActiveCollection, NotEnoughWords,
-            PAUSED_NOTE, StatsReport, WORDS_PAGE_SIZE, WordsPage,
+            AnswerResult, Help, ImportReport, LimitedWriter, MissingCollectionHint, PAUSED_NOTE,
+            StatsReport, WORDS_PAGE_SIZE, WordShortageHint, WordsPage,
         },
     },
     code::Code,
@@ -436,7 +436,7 @@ impl Handlers {
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    let hint = NotEnoughWords {
+                    let hint = WordShortageHint {
                         quiz_options: self.config.quiz.options,
                     };
                     let _ = write!(reply, "\n\n{hint}");
@@ -686,7 +686,7 @@ impl Handlers {
     /// when they already have collections to pick from.
     async fn no_collection(&self, user: UserId) -> Reply {
         let has_collections = self.storage.has_collections(user).await?;
-        self.say(user, NoActiveCollection { has_collections }.to_string())
+        self.say(user, MissingCollectionHint { has_collections }.to_string())
             .await
     }
 

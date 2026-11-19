@@ -39,13 +39,13 @@ impl Command {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("text is not a command")]
-pub struct NotCommand;
+pub struct ParseCommandError;
 
 impl FromStr for Command {
-    type Err = NotCommand;
+    type Err = ParseCommandError;
 
-    fn from_str(text: &str) -> Result<Command, NotCommand> {
-        let body = text.trim().strip_prefix('/').ok_or(NotCommand)?;
+    fn from_str(text: &str) -> Result<Command, ParseCommandError> {
+        let body = text.trim().strip_prefix('/').ok_or(ParseCommandError)?;
         let (head, argument) = match body.split_once(char::is_whitespace) {
             Some((head, argument)) => (head, argument.trim()),
             None => (body, ""),
@@ -80,7 +80,7 @@ impl FromStr for Command {
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> Result<Command, NotCommand> {
+    fn parse(text: &str) -> Result<Command, ParseCommandError> {
         text.parse::<Command>()
     }
 
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn plain_text_is_not_command() {
-        assert_eq!(parse("σπίτι дом"), Err(NotCommand));
+        assert_eq!(parse("σπίτι дом"), Err(ParseCommandError));
     }
 
     #[test]

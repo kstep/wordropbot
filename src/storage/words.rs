@@ -5,7 +5,7 @@ use sqlx::SqliteExecutor;
 use super::{Storage, collections::CancelledQuiz, quizzes::QuizScope};
 use crate::{
     ids::{CollectionId, UserId, WordId},
-    import::{Normalized, ParsedPair},
+    import::{NormalizedText, ParsedPair},
     time::Timestamp,
 };
 
@@ -49,7 +49,7 @@ impl Storage {
         let mut created = HashSet::new();
         let mut updated = HashSet::new();
         for pair in pairs {
-            let term_norm = Normalized::new(&pair.term);
+            let term_norm = NormalizedText::new(&pair.term);
             let existing: Option<WordId> = sqlx::query_scalar(
                 "SELECT id FROM words WHERE collection_id = ? AND term_norm = ?",
             )
@@ -78,7 +78,7 @@ impl Storage {
                     id
                 }
             };
-            let text_norm = Normalized::new(&pair.translation);
+            let text_norm = NormalizedText::new(&pair.translation);
             let is_known: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM translations WHERE word_id = ? AND text_norm = ?)",
             )
@@ -166,7 +166,7 @@ impl Storage {
         let word: Option<(WordId, String)> =
             sqlx::query_as("SELECT id, term FROM words WHERE collection_id = ? AND term_norm = ?")
                 .bind(collection_id)
-                .bind(Normalized::new(term).as_str())
+                .bind(NormalizedText::new(term).as_str())
                 .fetch_optional(&self.pool)
                 .await?;
         let Some((id, term)) = word else {

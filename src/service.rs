@@ -14,7 +14,7 @@ use tokio::{
 use crate::{
     config::Config,
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
-    import::Normalized,
+    import::NormalizedText,
     quiz::QuizOptions,
     selection::Weights,
     storage::{Candidate, Storage},
@@ -115,16 +115,16 @@ impl ChosenQuiz {
             // others, so normalizing the rest of the collection would change
             // nothing.
             let enough = longest + distractors_needed;
-            let mut distinct: HashSet<Normalized> = HashSet::new();
+            let mut distinct: HashSet<NormalizedText> = HashSet::new();
             let mut own_counts = Vec::with_capacity(positions.len());
             for &position in positions {
                 if distinct.len() >= enough {
                     break;
                 }
-                let own: HashSet<Normalized> = candidates[position]
+                let own: HashSet<NormalizedText> = candidates[position]
                     .translations
                     .iter()
-                    .map(|translation| Normalized::new(translation))
+                    .map(|translation| NormalizedText::new(translation))
                     .collect();
                 own_counts.push(own.len());
                 distinct.extend(own);
@@ -800,15 +800,15 @@ mod tests {
             let expected: Vec<bool> = candidates
                 .iter()
                 .map(|word| {
-                    let normalized = |other: &Candidate| -> HashSet<Normalized> {
+                    let normalized = |other: &Candidate| -> HashSet<NormalizedText> {
                         other
                             .translations
                             .iter()
-                            .map(|translation| Normalized::new(translation))
+                            .map(|translation| NormalizedText::new(translation))
                             .collect()
                     };
                     let own = normalized(word);
-                    let others: HashSet<Normalized> = candidates
+                    let others: HashSet<NormalizedText> = candidates
                         .iter()
                         .filter(|other| other.collection_id == word.collection_id)
                         .flat_map(normalized)

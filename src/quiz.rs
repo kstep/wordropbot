@@ -5,7 +5,7 @@ use rand::{
     seq::{IndexedRandom, SliceRandom},
 };
 
-use crate::import::Normalized;
+use crate::import::NormalizedText;
 
 pub struct QuizOptions {
     // Private so `correct_index` always points into `options`.
@@ -28,11 +28,13 @@ impl QuizOptions {
         let correct = own.choose(random_generator)?;
         // Excludes every translation of the word, not only the chosen one, so a
         // synonym never shows up as a wrong answer.
-        let mut seen: HashSet<Normalized> =
-            own.iter().map(|option| Normalized::new(option)).collect();
+        let mut seen: HashSet<NormalizedText> = own
+            .iter()
+            .map(|option| NormalizedText::new(option))
+            .collect();
         let distractors: Vec<&String> = pool
             .into_iter()
-            .filter(|candidate| seen.insert(Normalized::new(candidate)))
+            .filter(|candidate| seen.insert(NormalizedText::new(candidate)))
             .collect();
         if distractors.len() < count - 1 {
             return None;
@@ -106,7 +108,7 @@ mod tests {
         assert_eq!(
             quiz.options()
                 .iter()
-                .filter(|option| Normalized::new(option).as_str() == "дом")
+                .filter(|option| NormalizedText::new(option).as_str() == "дом")
                 .count(),
             1
         );

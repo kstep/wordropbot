@@ -26,10 +26,10 @@ const DASH_SEPARATORS: [&str; 3] = [" - ", " – ", " — "];
 /// trimmed, inner whitespace collapsed. Accents are kept because they are
 /// significant in Greek.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Normalized(String);
+pub struct NormalizedText(String);
 
-impl Normalized {
-    pub fn new(text: &str) -> Normalized {
+impl NormalizedText {
+    pub fn new(text: &str) -> NormalizedText {
         let is_format = |character: char| character.general_category() == GeneralCategory::Format;
         let visible: Cow<str> = if text.contains(is_format) {
             Cow::Owned(
@@ -49,7 +49,7 @@ impl Normalized {
             }
             normalized.extend(word.nfc());
         }
-        Normalized(normalized)
+        NormalizedText(normalized)
     }
 
     pub fn as_str(&self) -> &str {
@@ -82,7 +82,7 @@ impl FromStr for ParsedPair {
         };
         let (term, translation) = (term.trim(), translation.trim());
         let is_blank = |side: &str| {
-            let visible = Normalized::new(side);
+            let visible = NormalizedText::new(side);
             visible.as_str().is_empty() || DASHES.contains(&visible.as_str())
         };
         if is_blank(term) || is_blank(translation) {
@@ -192,18 +192,22 @@ mod tests {
     #[test]
     fn case_variants_of_composed_letters_match() {
         assert_eq!(
-            Normalized::new("\u{3aa}\u{301}"),
-            Normalized::new("\u{390}")
+            NormalizedText::new("\u{3aa}\u{301}"),
+            NormalizedText::new("\u{390}")
         );
         assert_eq!(
-            Normalized::new("\u{3ab}\u{301}"),
-            Normalized::new("\u{3b0}")
+            NormalizedText::new("\u{3ab}\u{301}"),
+            NormalizedText::new("\u{3b0}")
         );
     }
     #[test]
     fn invisible_characters_do_not_distinguish_text() {
         for text in ["дом\u{200b}", "до\u{ad}м", "\u{feff}дом", "д\u{2060}ом"] {
-            assert_eq!(Normalized::new(text), Normalized::new("дом"), "{text:?}");
+            assert_eq!(
+                NormalizedText::new(text),
+                NormalizedText::new("дом"),
+                "{text:?}"
+            );
         }
     }
     #[test]
@@ -218,9 +222,9 @@ mod tests {
     }
     #[test]
     fn normalizes() {
-        assert_eq!(Normalized::new("  ΣΠΊΤΙ   Μου ").as_str(), "σπίτι μου");
-        assert_eq!(Normalized::new("e\u{301}").as_str(), "é");
-        assert_ne!(Normalized::new("σπίτι"), Normalized::new("σπιτι"));
-        assert_eq!(Normalized::new("ΛΟΓΟΣ"), Normalized::new("λογος"));
+        assert_eq!(NormalizedText::new("  ΣΠΊΤΙ   Μου ").as_str(), "σπίτι μου");
+        assert_eq!(NormalizedText::new("e\u{301}").as_str(), "é");
+        assert_ne!(NormalizedText::new("σπίτι"), NormalizedText::new("σπιτι"));
+        assert_eq!(NormalizedText::new("ΛΟΓΟΣ"), NormalizedText::new("λογος"));
     }
 }

@@ -4,7 +4,7 @@ use super::{Storage, quizzes::QuizScope};
 use crate::{
     code::Code,
     ids::{CollectionId, MessageId, UserId},
-    import::Normalized,
+    import::NormalizedText,
     time::Timestamp,
 };
 
@@ -22,7 +22,7 @@ pub enum CollectionNameError {
 
 impl CollectionName {
     pub fn new(name: &str, max_chars: usize) -> Result<CollectionName, CollectionNameError> {
-        if Normalized::new(name).as_str().is_empty() {
+        if NormalizedText::new(name).as_str().is_empty() {
             return Err(CollectionNameError::Empty);
         }
         if name.chars().count() > max_chars {

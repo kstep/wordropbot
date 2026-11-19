@@ -74,11 +74,11 @@ impl fmt::Display for Help {
 }
 
 /// Added to an import reply when no word can be asked yet.
-pub struct NotEnoughWords {
+pub struct WordShortageHint {
     pub quiz_options: usize,
 }
 
-impl fmt::Display for NotEnoughWords {
+impl fmt::Display for WordShortageHint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -89,11 +89,11 @@ impl fmt::Display for NotEnoughWords {
 }
 
 /// Reply to a command that needs an active collection when there is none.
-pub struct NoActiveCollection {
+pub struct MissingCollectionHint {
     pub has_collections: bool,
 }
 
-impl fmt::Display for NoActiveCollection {
+impl fmt::Display for MissingCollectionHint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.has_collections {
             formatter.write_str("Активная коллекция не выбрана. Выбери её через /collection.")
@@ -175,9 +175,9 @@ impl<W: fmt::Write> fmt::Write for LimitedWriter<W> {
 }
 
 /// Text cut with an ellipsis if it exceeds Telegram's message limit.
-pub struct Truncated<'a>(pub &'a str);
+pub struct TruncatedText<'a>(pub &'a str);
 
-impl fmt::Display for Truncated<'_> {
+impl fmt::Display for TruncatedText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut output = LimitedWriter::message(formatter);
         output.write_str(self.0)?;
@@ -186,9 +186,9 @@ impl fmt::Display for Truncated<'_> {
 }
 
 /// Translations listed with commas.
-struct Joined<'a>(&'a [String]);
+struct JoinedList<'a>(&'a [String]);
 
-impl fmt::Display for Joined<'_> {
+impl fmt::Display for JoinedList<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (index, item) in self.0.iter().enumerate() {
             if index > 0 {
@@ -207,7 +207,7 @@ impl fmt::Display for WordLine<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let word = self.0;
         let mut output = LimitedWriter::new(formatter, MAX_WORD_LINE_CHARS);
-        write!(output, "{} — {}", word.term, Joined(&word.translations))?;
+        write!(output, "{} — {}", word.term, JoinedList(&word.translations))?;
         output.finish()
     }
 }
@@ -315,7 +315,7 @@ impl fmt::Display for AnswerResult<'_> {
             output,
             "{mark} {} — {}",
             self.term,
-            Joined(self.translations)
+            JoinedList(self.translations)
         )?;
         if !self.is_correct {
             write!(output, " (ты выбрал: {})", self.chosen)?;
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn text_over_telegram_limit_is_cut_with_ellipsis() {
         let fitting = "щ".repeat(4096);
-        assert_eq!(Truncated(&fitting).to_string(), fitting);
+        assert_eq!(TruncatedText(&fitting).to_string(), fitting);
         let outcome = AnswerOutcome::Answered {
             is_correct: false,
             term: "щ".repeat(3000),
@@ -418,7 +418,7 @@ mod tests {
             chosen: "ы".into(),
         };
         for text in [
-            Truncated(&"щ".repeat(4097)).to_string(),
+            TruncatedText(&"щ".repeat(4097)).to_string(),
             AnswerResult::new(&outcome).unwrap().to_string(),
         ] {
             assert_eq!(text.chars().count(), 4096);
@@ -577,11 +577,11 @@ mod tests {
 
     #[test]
     fn no_active_collection_hints_by_ownership() {
-        let none = NoActiveCollection {
+        let none = MissingCollectionHint {
             has_collections: false,
         }
         .to_string();
-        let others = NoActiveCollection {
+        let others = MissingCollectionHint {
             has_collections: true,
         }
         .to_string();
