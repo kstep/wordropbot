@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use chrono::{DateTime, Utc};
 use rand::{SeedableRng, rngs::StdRng};
 use tokio::sync::watch;
 
@@ -17,14 +18,13 @@ use crate::{
     period::Period,
     service::{QuizSender, QuizService, SendError},
     storage::Storage,
-    time::Timestamp,
 };
 
 pub const FAKE_MESSAGE_ID: MessageId = MessageId(777);
 const FIXTURE_CODE: &str = "K7QM-3XPA";
 
-pub fn timestamp(seconds: i64) -> Timestamp {
-    Timestamp::from_secs(seconds).unwrap()
+pub fn timestamp(seconds: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp(seconds, 0).unwrap()
 }
 
 pub fn user_id(id: i64) -> UserId {
@@ -65,7 +65,7 @@ pub async fn user_with_collection(storage: &Storage, user: UserId, code: &str) -
         .id
 }
 
-pub async fn next_quiz_at(storage: &Storage, user: UserId) -> Timestamp {
+pub async fn next_quiz_at(storage: &Storage, user: UserId) -> DateTime<Utc> {
     storage.get_user(user).await.unwrap().unwrap().next_quiz_at
 }
 

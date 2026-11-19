@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqliteExecutor};
 
 use super::{Storage, quizzes::QuizScope};
@@ -5,7 +6,6 @@ use crate::{
     code::Code,
     ids::{CollectionId, MessageId, UserId},
     import::NormalizedText,
-    time::Timestamp,
 };
 
 /// A collection name that is not empty and fits the character limit.
@@ -74,7 +74,7 @@ impl Storage {
         user_id: UserId,
         name: &str,
         code: &Code,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<Collection>, CollectionError> {
         let mut transaction = self.begin_write().await?;
         self.check_collection_limit(&mut transaction, user_id)
@@ -102,7 +102,7 @@ impl Storage {
         &self,
         user_id: UserId,
         code: &Code,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<Collection>, CollectionError> {
         let mut transaction = self.begin_write().await?;
         let collection: Option<Collection> =
@@ -201,7 +201,7 @@ impl Storage {
         &self,
         user_id: UserId,
         collection_id: CollectionId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         if !Self::is_member(&mut *transaction, user_id, collection_id).await? {
@@ -243,7 +243,7 @@ impl Storage {
         transaction: &mut SqliteConnection,
         user_id: UserId,
         collection_id: CollectionId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO memberships (user_id, collection_id, joined_at) VALUES (?, ?, ?) \

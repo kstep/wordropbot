@@ -1,27 +1,28 @@
+use chrono::{DateTime, Utc};
 use rand::{
     Rng,
     distr::{Distribution, weighted::WeightedIndex},
 };
 use serde::Deserialize;
 
-use crate::{config::SelectionConfig, time::Timestamp};
+use crate::config::SelectionConfig;
 
 const SECS_PER_DAY: f64 = 86_400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct AnswerRecord {
-    pub answered_at: Timestamp,
+    pub answered_at: DateTime<Utc>,
     pub is_correct: bool,
 }
 
 impl SelectionConfig {
     /// Recency-weighted error rate, smoothed towards the configured prior.
-    pub fn error_rate(&self, answers: &[AnswerRecord], now: Timestamp) -> f64 {
+    pub fn error_rate(&self, answers: &[AnswerRecord], now: DateTime<Utc>) -> f64 {
         let (mut total, mut errors) = (0.0, 0.0);
         for answer in answers {
-            // `secs_since` clamps clock skew and future timestamps, so the
-            // weight never exceeds 1.
-            let age_days = now.secs_since(answer.answered_at) as f64 / SECS_PER_DAY;
+            // Clock skew can date an answer in the future; clamping keeps the
+            // weight at most 1.
+            let age_days = (now - answer.answered_at).num_seconds().max(0) as f64 / SECS_PER_DAY;
             let weight = 0.5_f64.powf(age_days / self.half_life_days);
             total += weight;
             if !answer.is_correct {
@@ -33,7 +34,7 @@ impl SelectionConfig {
 
     /// Selection weight of a word: `min_weight` floor plus the scaled error
     /// rate.
-    pub fn word_weight(&self, answers: &[AnswerRecord], now: Timestamp) -> f64 {
+    pub fn word_weight(&self, answers: &[AnswerRecord], now: DateTime<Utc>) -> f64 {
         self.min_weight + (1.0 - self.min_weight) * self.error_rate(answers, now)
     }
 }

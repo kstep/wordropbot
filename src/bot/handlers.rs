@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
+use chrono::Utc;
 use rand::rngs::StdRng;
 use teloxide::{
     RequestError,
@@ -37,7 +38,6 @@ use crate::{
         CancelledQuiz, CollectionError, CollectionName, CollectionNameError, CollectionSummary,
         Storage, User,
     },
-    time::Timestamp,
 };
 
 const APOLOGY: &str = "Что-то пошло не так, попробуй ещё раз позже.";
@@ -341,7 +341,7 @@ impl Handlers {
             let code = Code::generate(&mut rand::rng());
             let created = self
                 .storage
-                .create_collection(user, name.as_str(), &code, Timestamp::now())
+                .create_collection(user, name.as_str(), &code, Utc::now())
                 .await;
             let collection = match created {
                 Ok(Some(collection)) => collection,
@@ -368,7 +368,7 @@ impl Handlers {
     }
 
     async fn collection_join(&self, user: UserId, raw: &str) -> Reply {
-        let now = Timestamp::now();
+        let now = Utc::now();
         if !self.limiter().allow(user, now) {
             return self
                 .say(
@@ -429,11 +429,7 @@ impl Handlers {
             reply.push_str(IMPORT_FORMAT);
         } else {
             // The import is saved, so a failed check only costs the hint.
-            match self
-                .service
-                .has_eligible_words(user.id, Timestamp::now())
-                .await
-            {
+            match self.service.has_eligible_words(user.id, Utc::now()).await {
                 Ok(true) => {}
                 Ok(false) => {
                     let hint = WordShortageHint {
@@ -483,12 +479,7 @@ impl Handlers {
         };
         let stats = self
             .storage
-            .collection_stats(
-                user.id,
-                collection,
-                Timestamp::now(),
-                &self.config.selection,
-            )
+            .collection_stats(user.id, collection, Utc::now(), &self.config.selection)
             .await?;
         self.say(user.id, StatsReport(&stats).to_string()).await
     }
@@ -505,26 +496,18 @@ impl Handlers {
                 .say(user, format!("Период не может быть короче {min}."))
                 .await;
         }
-        let quiz_open = self
-            .storage
-            .set_period(user, period, Timestamp::now())
-            .await?;
+        let quiz_open = self.storage.set_period(user, period, Utc::now()).await?;
         let text = Self::with_open_quiz_note(format!("Период квизов: {period}."), quiz_open);
         self.say(user, text).await
     }
 
     async fn pause(&self, user: UserId) -> Reply {
-        self.storage
-            .set_paused(user, true, Timestamp::now())
-            .await?;
+        self.storage.set_paused(user, true, Utc::now()).await?;
         self.say(user, PAUSED_NOTE).await
     }
 
     async fn resume(&self, user: UserId) -> Reply {
-        let quiz_open = self
-            .storage
-            .set_paused(user, false, Timestamp::now())
-            .await?;
+        let quiz_open = self.storage.set_paused(user, false, Utc::now()).await?;
         let text = Self::with_open_quiz_note("Квизы возобновлены.".into(), quiz_open);
         self.say(user, text).await
     }
@@ -533,7 +516,7 @@ impl Handlers {
         let mut random_generator: StdRng = rand::make_rng();
         match self
             .service
-            .request_quiz(user, Timestamp::now(), &mut random_generator)
+            .request_quiz(user, Utc::now(), &mut random_generator)
             .await?
         {
             DispatchOutcome::Sent | DispatchOutcome::Blocked => Ok(()),
@@ -550,7 +533,7 @@ impl Handlers {
     }
 
     async fn skip(&self, user: UserId) -> Reply {
-        match self.storage.skip_quiz(user, Timestamp::now()).await? {
+        match self.storage.skip_quiz(user, Utc::now()).await? {
             Some(cancelled) => {
                 self.drop_keyboards(&[cancelled]).await;
                 self.say(user, "Квиз пропущен, ошибкой это не считается.")
@@ -563,7 +546,7 @@ impl Handlers {
     async fn answer(&self, press: Press, quiz: QuizId, index: usize) -> Reply<Notice> {
         let outcome = self
             .storage
-            .answer_quiz(quiz, press.user, index, Timestamp::now())
+            .answer_quiz(quiz, press.user, index, Utc::now())
             .await?;
         match AnswerResult::new(&outcome) {
             Some(result) => Ok(self.show_committed(press, &result.to_string()).await),
@@ -624,7 +607,7 @@ impl Handlers {
     async fn leave_confirm(&self, press: Press, id: CollectionId) -> Reply<Notice> {
         let Some(cancelled) = self
             .storage
-            .leave_collection(press.user, id, Timestamp::now())
+            .leave_collection(press.user, id, Utc::now())
             .await?
         else {
             return Ok(Some(NOT_MEMBER_NOTICE));
@@ -634,11 +617,7 @@ impl Handlers {
     }
 
     async fn remove_confirm(&self, press: Press, id: WordId) -> Reply<Notice> {
-        let Some(cancelled) = self
-            .storage
-            .remove_word(press.user, id, Timestamp::now())
-            .await?
-        else {
+        let Some(cancelled) = self.storage.remove_word(press.user, id, Utc::now()).await? else {
             return Ok(Some("Слово уже удалено или недоступно."));
         };
         self.drop_keyboards(&cancelled).await;
@@ -668,7 +647,7 @@ impl Handlers {
 
     async fn ensure_user(&self, id: UserId) -> Result<User, sqlx::Error> {
         self.storage
-            .ensure_user(id, self.config.schedule.default_period, Timestamp::now())
+            .ensure_user(id, self.config.schedule.default_period, Utc::now())
             .await
     }
 

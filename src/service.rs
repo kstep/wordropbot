@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
@@ -18,7 +19,6 @@ use crate::{
     quiz::QuizOptions,
     selection::Weights,
     storage::{Candidate, Storage},
-    time::Timestamp,
 };
 
 /// Each selection can hold a blocking thread and a user's whole vocabulary in
@@ -59,7 +59,7 @@ impl ChosenQuiz {
     pub fn choose<R: Rng + ?Sized>(
         candidates: &[Candidate],
         config: &Config,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut R,
     ) -> Option<ChosenQuiz> {
         let distractors_needed = config.quiz.options.saturating_sub(1);
@@ -183,7 +183,7 @@ impl<S: QuizSender> QuizService<S> {
         }
     }
 
-    pub async fn due_users(&self, now: Timestamp) -> Result<Vec<UserId>, sqlx::Error> {
+    pub async fn due_users(&self, now: DateTime<Utc>) -> Result<Vec<UserId>, sqlx::Error> {
         self.storage.due_users(now).await
     }
 
@@ -196,7 +196,7 @@ impl<S: QuizSender> QuizService<S> {
     pub async fn has_eligible_words(
         &self,
         user: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<bool, sqlx::Error> {
         let mut random_generator: StdRng = rand::make_rng();
         let selection = self.choose_quiz(user, now, &mut random_generator).await?;
@@ -209,7 +209,7 @@ impl<S: QuizSender> QuizService<S> {
     pub async fn dispatch_due(
         &self,
         user: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
     ) -> Result<Option<DispatchOutcome>, sqlx::Error> {
         match self.storage.get_user(user).await? {
@@ -225,7 +225,7 @@ impl<S: QuizSender> QuizService<S> {
     pub async fn request_quiz(
         &self,
         user: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
     ) -> Result<DispatchOutcome, sqlx::Error> {
         let Some(open) = self.storage.open_quiz(user).await? else {
@@ -252,7 +252,7 @@ impl<S: QuizSender> QuizService<S> {
     pub async fn dispatch(
         &self,
         user: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
     ) -> Result<DispatchOutcome, sqlx::Error> {
         if self.storage.open_quiz(user).await?.is_some() {
@@ -311,7 +311,7 @@ impl<S: QuizSender> QuizService<S> {
     async fn choose_quiz(
         &self,
         user: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
     ) -> Result<Selection, sqlx::Error> {
         let options = self.config.quiz.options;
@@ -339,7 +339,7 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         candidates: Vec<Candidate>,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
         permit: OwnedSemaphorePermit,
     ) -> Selection {
@@ -371,7 +371,7 @@ impl<S: QuizSender> QuizService<S> {
         &self,
         user: UserId,
         error: SendError,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<DispatchOutcome, sqlx::Error> {
         match error {
             SendError::Blocked => {

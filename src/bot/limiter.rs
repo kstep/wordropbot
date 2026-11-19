@@ -1,20 +1,18 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{ids::UserId, time::Timestamp};
+use chrono::{DateTime, TimeDelta, Utc};
 
-const WINDOW_SECS: u64 = 60;
+use crate::ids::UserId;
+
+const WINDOW: TimeDelta = TimeDelta::minutes(1);
 
 /// Times of recent failed attempts, oldest first.
 #[derive(Default)]
-struct FailureWindow(VecDeque<Timestamp>);
+struct FailureWindow(VecDeque<DateTime<Utc>>);
 
 impl FailureWindow {
-    fn expire(&mut self, now: Timestamp) {
-        while self
-            .0
-            .front()
-            .is_some_and(|&time| now.secs_since(time) >= WINDOW_SECS)
-        {
+    fn expire(&mut self, now: DateTime<Utc>) {
+        while self.0.front().is_some_and(|&time| now - time >= WINDOW) {
             self.0.pop_front();
         }
     }
@@ -27,7 +25,7 @@ impl FailureWindow {
         self.0.len()
     }
 
-    fn push(&mut self, now: Timestamp) {
+    fn push(&mut self, now: DateTime<Utc>) {
         self.0.push_back(now);
     }
 }
@@ -46,7 +44,7 @@ impl JoinLimiter {
         }
     }
 
-    pub fn allow(&mut self, user: UserId, now: Timestamp) -> bool {
+    pub fn allow(&mut self, user: UserId, now: DateTime<Utc>) -> bool {
         let Some(window) = self.failures.get_mut(&user) else {
             return true;
         };
@@ -58,7 +56,7 @@ impl JoinLimiter {
         window.len() < self.max_per_minute as usize
     }
 
-    pub fn record_failure(&mut self, user: UserId, now: Timestamp) {
+    pub fn record_failure(&mut self, user: UserId, now: DateTime<Utc>) {
         // Sweep every user so entries of idle users do not accumulate forever.
         self.failures.retain(|_, window| {
             window.expire(now);

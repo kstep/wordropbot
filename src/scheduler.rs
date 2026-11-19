@@ -1,13 +1,11 @@
+use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use tokio::{
     sync::watch,
     time::{self, MissedTickBehavior},
 };
 
-use crate::{
-    service::{DispatchOutcome, QuizSender, QuizService},
-    time::Timestamp,
-};
+use crate::service::{DispatchOutcome, QuizSender, QuizService};
 
 pub struct Scheduler<S> {
     service: QuizService<S>,
@@ -22,7 +20,7 @@ impl<S: QuizSender> Scheduler<S> {
     /// is true.
     pub async fn tick(
         &self,
-        now: Timestamp,
+        now: DateTime<Utc>,
         random_generator: &mut StdRng,
         shutdown: &watch::Receiver<bool>,
     ) -> Result<usize, sqlx::Error> {
@@ -55,7 +53,7 @@ impl<S: QuizSender> Scheduler<S> {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(error) = self.tick(Timestamp::now(), &mut random_generator, &shutdown).await {
+                    if let Err(error) = self.tick(Utc::now(), &mut random_generator, &shutdown).await {
                         tracing::error!(%error, "scheduler tick failed");
                     }
                 }

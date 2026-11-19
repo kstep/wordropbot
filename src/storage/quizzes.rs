@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow, types::Json};
 
 use super::{CancelledQuiz, Storage};
@@ -6,7 +7,6 @@ use crate::{
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
     import::NormalizedText,
     selection::AnswerRecord,
-    time::Timestamp,
 };
 
 const HARDEST_LIMIT: usize = 10;
@@ -179,7 +179,7 @@ impl Storage {
         word_id: WordId,
         options: &[String],
         correct_index: usize,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<QuizId>, sqlx::Error> {
         sqlx::query_scalar(
             "INSERT INTO quizzes (user_id, word_id, options, correct_index, sent_at) \
@@ -238,7 +238,7 @@ impl Storage {
         quiz_id: QuizId,
         user_id: UserId,
         chosen_index: usize,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<AnswerOutcome, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         let row: Option<(WordId, Json<Vec<String>>, i64)> = sqlx::query_as(
@@ -296,7 +296,7 @@ impl Storage {
     pub async fn skip_quiz(
         &self,
         user_id: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<CancelledQuiz>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         let cancelled =
@@ -310,7 +310,7 @@ impl Storage {
     pub(super) async fn cancel_open_quizzes(
         transaction: &mut SqliteConnection,
         scope: QuizScope,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Vec<CancelledQuiz>, sqlx::Error> {
         let cancelled: Vec<CancelledQuiz> = sqlx::query_as(
             "DELETE FROM quizzes WHERE answered_at IS NULL \
@@ -343,7 +343,7 @@ impl Storage {
         &self,
         user_id: UserId,
         collection_id: CollectionId,
-        now: Timestamp,
+        now: DateTime<Utc>,
         selection: &SelectionConfig,
     ) -> Result<CollectionStats, sqlx::Error> {
         let word_count = self.count_words(collection_id).await?;
@@ -387,6 +387,7 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeDelta;
     use sqlx::Error;
 
     use super::*;
@@ -968,7 +969,7 @@ mod tests {
                 .answer_quiz(quiz, user_id(1), choice, now)
                 .await
                 .unwrap();
-            now = timestamp(now.as_secs() + 1);
+            now += TimeDelta::seconds(1);
         }
         let word = fixture
             .storage

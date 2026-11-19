@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use sqlx::SqliteExecutor;
 
 use super::{Storage, collections::CancelledQuiz, quizzes::QuizScope};
 use crate::{
     ids::{CollectionId, UserId, WordId},
     import::{NormalizedText, ParsedPair},
-    time::Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -198,7 +198,7 @@ impl Storage {
         &self,
         user_id: UserId,
         word_id: WordId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<Option<Vec<CancelledQuiz>>, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         let collection_id: Option<CollectionId> =

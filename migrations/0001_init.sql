@@ -2,21 +2,21 @@ CREATE TABLE collections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     code       TEXT    NOT NULL UNIQUE,
     name       TEXT    NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at TEXT    NOT NULL
 );
 
 CREATE TABLE users (
     id                   INTEGER PRIMARY KEY,
     period_secs          INTEGER NOT NULL,
     paused               INTEGER NOT NULL DEFAULT 0,
-    next_quiz_at         INTEGER NOT NULL,
+    next_quiz_at         TEXT    NOT NULL,
     active_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL
 );
 
 CREATE TABLE memberships (
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    joined_at     INTEGER NOT NULL,
+    joined_at     TEXT    NOT NULL,
     PRIMARY KEY (user_id, collection_id)
 );
 CREATE INDEX memberships_collection ON memberships(collection_id);
@@ -44,8 +44,8 @@ CREATE TABLE quizzes (
     options       TEXT    NOT NULL,
     correct_index INTEGER NOT NULL,
     message_id    INTEGER,
-    sent_at       INTEGER NOT NULL,
-    answered_at   INTEGER,
+    sent_at       TEXT    NOT NULL,
+    answered_at   TEXT,
     chosen_index  INTEGER,
     is_correct    INTEGER
 );

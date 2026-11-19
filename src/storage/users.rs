@@ -1,10 +1,10 @@
+use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
 
 use super::Storage;
 use crate::{
     ids::{CollectionId, UserId},
     period::Period,
-    time::Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
@@ -13,14 +13,14 @@ pub struct User {
     #[sqlx(rename = "period_secs")]
     pub period: Period,
     pub paused: bool,
-    pub next_quiz_at: Timestamp,
+    pub next_quiz_at: DateTime<Utc>,
     pub active_collection_id: Option<CollectionId>,
 }
 
 impl User {
     /// Whether the scheduler may send a quiz: not paused and the next quiz is
     /// scheduled at or before `now`. An open quiz is checked separately.
-    pub fn is_due(self, now: Timestamp) -> bool {
+    pub fn is_due(self, now: DateTime<Utc>) -> bool {
         !self.paused && self.next_quiz_at <= now
     }
 }
@@ -31,7 +31,7 @@ impl Storage {
         &self,
         id: UserId,
         default_period: Period,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<User, sqlx::Error> {
         sqlx::query(
             "INSERT INTO users (id, period_secs, paused, next_quiz_at) VALUES (?, ?, 0, ?) \
@@ -61,7 +61,7 @@ impl Storage {
         &self,
         id: UserId,
         period: Period,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<bool, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         let open = Self::has_open_quiz(&mut transaction, id).await?;
@@ -84,7 +84,7 @@ impl Storage {
         &self,
         id: UserId,
         paused: bool,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<bool, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         let open = Self::has_open_quiz(&mut transaction, id).await?;
@@ -104,7 +104,7 @@ impl Storage {
     }
 
     /// Moves the user's next quiz one period after `now`.
-    pub async fn postpone_user(&self, id: UserId, now: Timestamp) -> Result<(), sqlx::Error> {
+    pub async fn postpone_user(&self, id: UserId, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
         let mut transaction = self.begin_write().await?;
         Self::reschedule(&mut transaction, id, now).await?;
         transaction.commit().await
@@ -116,7 +116,7 @@ impl Storage {
     pub(super) async fn reschedule(
         transaction: &mut SqliteConnection,
         user_id: UserId,
-        now: Timestamp,
+        now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         let period: Period = sqlx::query_scalar("SELECT period_secs FROM users WHERE id = ?")
             .bind(user_id)
@@ -130,7 +130,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn due_users(&self, now: Timestamp) -> Result<Vec<UserId>, sqlx::Error> {
+    pub async fn due_users(&self, now: DateTime<Utc>) -> Result<Vec<UserId>, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT id FROM users WHERE paused = 0 AND next_quiz_at <= ? \
              AND NOT EXISTS (SELECT 1 FROM quizzes q WHERE q.user_id = users.id AND q.answered_at IS NULL) \
@@ -164,6 +164,27 @@ mod tests {
 
     fn period(seconds: u64) -> Period {
         Period::from_secs(seconds).unwrap()
+    }
+
+    /// Moments are stored as text with as many fraction digits as they need.
+    #[tokio::test]
+    async fn due_check_orders_fractional_seconds() {
+        let storage = Storage::in_memory().await;
+        let moment = |nanos| DateTime::from_timestamp(100, nanos).unwrap();
+        storage
+            .ensure_user(user_id(1), period(60), moment(500_000_000))
+            .await
+            .unwrap();
+        for (now, is_due) in [
+            (timestamp(100), false),
+            (moment(499_999_999), false),
+            (moment(500_000_000), true),
+            (moment(500_000_001), true),
+            (timestamp(101), true),
+        ] {
+            let due = storage.due_users(now).await.unwrap();
+            assert_eq!(!due.is_empty(), is_due, "{now}");
+        }
     }
 
     #[tokio::test]

@@ -1,13 +1,16 @@
-use std::{fmt, str::FromStr, time::Duration};
+use std::{fmt, ops::Add, str::FromStr, time::Duration};
 
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::ids::validated_sqlite_type;
 
-/// A positive whole number of seconds that fits in `i64`, the type SQLite
-/// stores.
+/// A positive whole number of seconds, at most a year, so adding it to the
+/// current moment never overflows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Period(i64);
+
+const MAX_SECS: i64 = 365 * 86_400;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ParsePeriodError {
@@ -22,7 +25,7 @@ pub enum ParsePeriodError {
 }
 
 impl Period {
-    /// `None` for zero or more than `i64::MAX`.
+    /// `None` for zero or more than a year.
     pub fn from_secs(seconds: u64) -> Option<Period> {
         i64::try_from(seconds)
             .ok()
@@ -41,6 +44,7 @@ impl TryFrom<i64> for Period {
         match seconds {
             0 => Err(ParsePeriodError::Zero),
             seconds if seconds < 0 => Err(ParsePeriodError::Invalid(seconds.to_string())),
+            seconds if seconds > MAX_SECS => Err(ParsePeriodError::TooLarge),
             seconds => Ok(Period(seconds)),
         }
     }
@@ -82,6 +86,14 @@ impl fmt::Display for Period {
 }
 
 validated_sqlite_type!(Period, i64, i64, Period::try_from);
+
+impl Add<Period> for DateTime<Utc> {
+    type Output = DateTime<Utc>;
+
+    fn add(self, period: Period) -> DateTime<Utc> {
+        self + TimeDelta::seconds(period.0)
+    }
+}
 
 impl<'de> Deserialize<'de> for Period {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Period, D::Error> {
@@ -137,6 +149,9 @@ mod tests {
     fn from_secs_checks_range() {
         assert_eq!(Period::from_secs(0), None);
         assert_eq!(Period::from_secs(i64::MAX as u64 + 1), None);
+        assert!(Period::from_secs(365 * 86_400).is_some());
+        assert_eq!(Period::from_secs(365 * 86_400 + 1), None);
+        assert_eq!("366d".parse::<Period>(), Err(ParsePeriodError::TooLarge));
         assert_eq!(Period::from_secs(60).unwrap().as_secs(), 60);
     }
 
