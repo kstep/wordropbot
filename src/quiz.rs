@@ -38,7 +38,7 @@ impl QuizOptions {
             return None;
         }
         let mut options: Vec<(&String, bool)> = distractors
-            .choose_multiple(random_generator, count - 1)
+            .sample(random_generator, count - 1)
             .map(|distractor| (*distractor, false))
             .collect();
         options.push((correct, true));

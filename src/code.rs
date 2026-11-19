@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, RngExt};
 
 use crate::ids::validated_sqlite_type;
 
@@ -23,7 +23,7 @@ pub enum ParseCodeError {
 impl Code {
     /// Needs a CSPRNG because the code is the only credential for joining a
     /// collection.
-    pub fn generate<R: CryptoRng + Rng + ?Sized>(random_generator: &mut R) -> Code {
+    pub fn generate<R: CryptoRng + ?Sized>(random_generator: &mut R) -> Code {
         let mut code = String::with_capacity(2 * HALF + 1);
         for index in 0..2 * HALF {
             if index == HALF {

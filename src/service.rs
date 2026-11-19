@@ -198,7 +198,7 @@ impl<S: QuizSender> QuizService<S> {
         user: UserId,
         now: Timestamp,
     ) -> Result<bool, sqlx::Error> {
-        let mut random_generator = StdRng::from_os_rng();
+        let mut random_generator: StdRng = rand::make_rng();
         let selection = self.choose_quiz(user, now, &mut random_generator).await?;
         Ok(!matches!(selection, Selection::NoEligibleWords))
     }
@@ -396,13 +396,16 @@ impl<S: QuizSender> QuizService<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc,
+    use std::{
+        convert::Infallible,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
+        },
     };
 
-    use rand::{RngCore, SeedableRng};
+    use rand::{RngExt, TryRng};
     use tokio::sync::oneshot;
 
     use super::*;
@@ -439,20 +442,22 @@ mod tests {
         }
     }
 
-    impl RngCore for CountingGenerator {
-        fn next_u32(&mut self) -> u32 {
+    impl TryRng for CountingGenerator {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
             self.draws += 1;
-            self.inner.next_u32()
+            self.inner.try_next_u32()
         }
 
-        fn next_u64(&mut self) -> u64 {
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
             self.draws += 1;
-            self.inner.next_u64()
+            self.inner.try_next_u64()
         }
 
-        fn fill_bytes(&mut self, destination: &mut [u8]) {
+        fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Infallible> {
             self.draws += 1;
-            self.inner.fill_bytes(destination);
+            self.inner.try_fill_bytes(destination)
         }
     }
 

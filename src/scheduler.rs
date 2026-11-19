@@ -1,4 +1,4 @@
-use rand::{SeedableRng, rngs::StdRng};
+use rand::rngs::StdRng;
 use tokio::{
     sync::watch,
     time::{self, MissedTickBehavior},
@@ -43,7 +43,7 @@ impl<S: QuizSender> Scheduler<S> {
 
     /// Ticks until `shutdown` turns true or its sender is dropped.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
-        let mut random_generator = StdRng::from_os_rng();
+        let mut random_generator: StdRng = rand::make_rng();
         let mut interval = time::interval(self.service.tick_interval());
         // A slow tick should not be followed by a burst of catch-up ticks.
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
