@@ -156,6 +156,13 @@ impl Storage {
         .await
     }
 
+    pub async fn has_collections(&self, user_id: UserId) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM memberships WHERE user_id = ?)")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
     pub(super) async fn is_member<'e>(
         executor: impl SqliteExecutor<'e>,
         user_id: UserId,

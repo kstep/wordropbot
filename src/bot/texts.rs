@@ -106,30 +106,96 @@ impl fmt::Display for NoActiveCollection {
     }
 }
 
-/// Text cut with an ellipsis if it exceeds Telegram's message limit.
-pub struct Truncated<'a>(pub &'a str);
+/// Writer that passes at most `max_chars` characters to `inner`: longer text
+/// keeps its first `max_chars - 1` characters and ends with an ellipsis. Text
+/// is written through as it comes, without buffering it.
+pub struct Truncating<W> {
+    inner: W,
+    max_chars: usize,
+    written: usize,
+    /// The character in the last slot, written only if nothing follows it.
+    last: Option<char>,
+    is_cut: bool,
+}
 
-impl Truncated<'_> {
-    fn write_within(&self, formatter: &mut fmt::Formatter<'_>, max_chars: usize) -> fmt::Result {
-        let text = self.0;
-        match text.char_indices().nth(max_chars) {
-            Some(_) => {
-                // Keep room for the ellipsis so the result fits the limit.
-                let keep = text
-                    .char_indices()
-                    .nth(max_chars - 1)
-                    .map_or(text.len(), |(byte_index, _)| byte_index);
-                formatter.write_str(&text[..keep])?;
-                formatter.write_str("…")
-            }
-            None => formatter.write_str(text),
+impl<W: fmt::Write> Truncating<W> {
+    pub fn new(inner: W, max_chars: usize) -> Truncating<W> {
+        debug_assert!(max_chars > 0);
+        Truncating {
+            inner,
+            max_chars,
+            written: 0,
+            last: None,
+            is_cut: false,
         }
+    }
+
+    /// Telegram's message limit.
+    pub fn message(inner: W) -> Truncating<W> {
+        Truncating::new(inner, MAX_MESSAGE_CHARS)
+    }
+
+    pub fn finish(mut self) -> fmt::Result {
+        match self.last {
+            Some(character) => self.inner.write_char(character),
+            None => Ok(()),
+        }
+    }
+
+    fn cut(&mut self) -> fmt::Result {
+        self.is_cut = true;
+        self.inner.write_char('…')
     }
 }
 
+impl<W: fmt::Write> fmt::Write for Truncating<W> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        if self.is_cut || text.is_empty() {
+            return Ok(());
+        }
+        if self.last.is_some() {
+            return self.cut();
+        }
+        let room = self.max_chars - 1 - self.written;
+        for (count, (index, character)) in text.char_indices().enumerate() {
+            if count == room {
+                self.inner.write_str(&text[..index])?;
+                self.written += count;
+                if index + character.len_utf8() == text.len() {
+                    self.last = Some(character);
+                    return Ok(());
+                }
+                return self.cut();
+            }
+        }
+        self.written += text.chars().count();
+        self.inner.write_str(text)
+    }
+}
+
+/// Text cut with an ellipsis if it exceeds Telegram's message limit.
+pub struct Truncated<'a>(pub &'a str);
+
 impl fmt::Display for Truncated<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.write_within(formatter, MAX_MESSAGE_CHARS)
+        let mut output = Truncating::message(formatter);
+        output.write_str(self.0)?;
+        output.finish()
+    }
+}
+
+/// Translations listed with commas.
+struct Joined<'a>(&'a [String]);
+
+impl fmt::Display for Joined<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, item) in self.0.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(", ")?;
+            }
+            formatter.write_str(item)?;
+        }
+        Ok(())
     }
 }
 
@@ -139,8 +205,9 @@ struct WordLine<'a>(&'a WordView);
 impl fmt::Display for WordLine<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let word = self.0;
-        let line = format!("{} — {}", word.term, word.translations.join(", "));
-        Truncated(&line).write_within(formatter, MAX_WORD_LINE_CHARS)
+        let mut output = Truncating::new(formatter, MAX_WORD_LINE_CHARS);
+        write!(output, "{} — {}", word.term, Joined(&word.translations))?;
+        output.finish()
     }
 }
 
@@ -153,12 +220,16 @@ pub struct WordsPage<'a> {
 
 impl fmt::Display for WordsPage<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut text = format!("Слова, страница {} из {}:", self.page, self.total_pages);
+        let mut output = Truncating::message(formatter);
+        write!(
+            output,
+            "Слова, страница {} из {}:",
+            self.page, self.total_pages
+        )?;
         for word in self.words {
-            // Writing to a String cannot fail.
-            let _ = write!(text, "\n{}", WordLine(word));
+            write!(output, "\n{}", WordLine(word))?;
         }
-        Truncated(&text).fmt(formatter)
+        output.finish()
     }
 }
 
@@ -177,17 +248,13 @@ impl fmt::Display for ImportReport<'_> {
             self.summary.added, self.summary.updated
         )?;
         if !self.bad_lines.is_empty() {
-            let shown: Vec<String> = self
-                .bad_lines
-                .iter()
-                .take(MAX_BAD_LINES)
-                .map(ToString::to_string)
-                .collect();
-            write!(
-                formatter,
-                "\nНе удалось разобрать строки: {}",
-                shown.join(", ")
-            )?;
+            formatter.write_str("\nНе удалось разобрать строки: ")?;
+            for (index, line) in self.bad_lines.iter().take(MAX_BAD_LINES).enumerate() {
+                if index > 0 {
+                    formatter.write_str(", ")?;
+                }
+                write!(formatter, "{line}")?;
+            }
             if self.bad_lines.len() > MAX_BAD_LINES {
                 formatter.write_str(" и другие")?;
             }
@@ -242,12 +309,17 @@ impl<'a> AnswerResult<'a> {
 impl fmt::Display for AnswerResult<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mark = if self.is_correct { "✅" } else { "❌" };
-        let mut text = format!("{mark} {} — {}", self.term, self.translations.join(", "));
+        let mut output = Truncating::message(formatter);
+        write!(
+            output,
+            "{mark} {} — {}",
+            self.term,
+            Joined(self.translations)
+        )?;
         if !self.is_correct {
-            // Writing to a String cannot fail.
-            let _ = write!(text, " (ты выбрал: {})", self.chosen);
+            write!(output, " (ты выбрал: {})", self.chosen)?;
         }
-        Truncated(&text).fmt(formatter)
+        output.finish()
     }
 }
 

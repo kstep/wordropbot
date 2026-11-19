@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::{
+    fmt::Write as _,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 
 use rand::rngs::StdRng;
 use teloxide::{
@@ -21,7 +24,7 @@ use crate::{
         page::Page,
         texts::{
             AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, PAUSED_NOTE,
-            StatsReport, Truncated, WORDS_PAGE_SIZE, WordsPage,
+            StatsReport, Truncating, WORDS_PAGE_SIZE, WordsPage,
         },
     },
     code::Code,
@@ -84,10 +87,13 @@ impl View {
     fn collections(collections: &[CollectionSummary], page: Page) -> View {
         let total_pages = Page::count_for(collections.len() as i64, COLLECTIONS_PAGE_SIZE);
         let page = page.clamped(total_pages);
-        let mut text = if total_pages > 1 {
-            format!("Твои коллекции, страница {page} из {total_pages}:")
+        let mut text = String::new();
+        let mut output = Truncating::message(&mut text);
+        // Writing to a String cannot fail.
+        let _ = if total_pages > 1 {
+            write!(output, "Твои коллекции, страница {page} из {total_pages}:")
         } else {
-            String::from("Твои коллекции:")
+            output.write_str("Твои коллекции:")
         };
         let mut rows = Vec::new();
         let shown = collections
@@ -100,11 +106,17 @@ impl View {
             } else {
                 ""
             };
-            text.push_str(&format!(
+            let _ = write!(
+                output,
                 "\n{} — {}, слов: {}{mark}",
                 collection.name, collection.code, collection.word_count
-            ));
-            let name: String = collection.name.chars().take(BUTTON_NAME_CHARS).collect();
+            );
+            let name_end = collection
+                .name
+                .char_indices()
+                .nth(BUTTON_NAME_CHARS)
+                .map_or(collection.name.len(), |(index, _)| index);
+            let name = &collection.name[..name_end];
             rows.push(vec![
                 CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
                 CallbackAction::LeaveAsk(collection.id).button("Выйти"),
@@ -114,8 +126,9 @@ impl View {
         if !navigation.is_empty() {
             rows.push(navigation);
         }
+        let _ = output.finish();
         View {
-            text: Truncated(&text).to_string(),
+            text,
             keyboard: Some(InlineKeyboardMarkup::new(rows)),
         }
     }
@@ -242,7 +255,7 @@ impl Handlers {
             // an answer.
             None => None,
         };
-        let mut answer = self.bot.answer_callback_query(query.id.clone());
+        let mut answer = self.bot.answer_callback_query(query.id);
         if let Some(text) = notice {
             answer = answer.text(text);
         }
@@ -426,7 +439,7 @@ impl Handlers {
                     let hint = NotEnoughWords {
                         quiz_options: self.config.quiz.options,
                     };
-                    reply.push_str(&format!("\n\n{hint}"));
+                    let _ = write!(reply, "\n\n{hint}");
                 }
                 Err(error) => {
                     tracing::warn!(user = %user.id, %error, "checking eligible words after import failed");
@@ -553,7 +566,7 @@ impl Handlers {
             .answer_quiz(quiz, press.user, index, Timestamp::now())
             .await?;
         match AnswerResult::new(&outcome) {
-            Some(result) => Ok(self.show_committed(press, result.to_string()).await),
+            Some(result) => Ok(self.show_committed(press, &result.to_string()).await),
             None => Ok(Some("Этот квиз уже закрыт.")),
         }
     }
@@ -617,9 +630,7 @@ impl Handlers {
             return Ok(Some(NOT_MEMBER_NOTICE));
         };
         self.drop_keyboards(&cancelled).await;
-        Ok(self
-            .show_committed(press, "Ты вышел из коллекции.".into())
-            .await)
+        Ok(self.show_committed(press, "Ты вышел из коллекции.").await)
     }
 
     async fn remove_confirm(&self, press: Press, id: WordId) -> Reply<Notice> {
@@ -631,7 +642,7 @@ impl Handlers {
             return Ok(Some("Слово уже удалено или недоступно."));
         };
         self.drop_keyboards(&cancelled).await;
-        Ok(self.show_committed(press, "Слово удалено.".into()).await)
+        Ok(self.show_committed(press, "Слово удалено.").await)
     }
 
     async fn words_page(&self, press: Press, user: User, page: Page) -> Reply<Notice> {
@@ -674,7 +685,7 @@ impl Handlers {
     /// Tells the user an active collection is needed, hinting at `/collection`
     /// when they already have collections to pick from.
     async fn no_collection(&self, user: UserId) -> Reply {
-        let has_collections = !self.storage.list_collections(user).await?.is_empty();
+        let has_collections = self.storage.has_collections(user).await?;
         self.say(user, NoActiveCollection { has_collections }.to_string())
             .await
     }
@@ -718,8 +729,8 @@ impl Handlers {
     /// Shows the result of a change that is already committed. A failed edit
     /// must not reach the apology path, since a retry would be wrong: send a
     /// new message instead.
-    async fn show_committed(&self, press: Press, text: String) -> Notice {
-        let Err(error) = self.edit(press, text.clone(), None).await else {
+    async fn show_committed(&self, press: Press, text: &str) -> Notice {
+        let Err(error) = self.edit(press, text.to_owned(), None).await else {
             return None;
         };
         tracing::warn!(user = %press.user, %error, "editing message with result failed");

@@ -116,28 +116,14 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for OpenQuiz {
     }
 }
 
-/// A candidate together with the normalized term used for tie-breaking.
-struct Loaded {
-    candidate: Candidate,
-    term_norm: String,
-}
-
 impl Storage {
     /// Words of all the user's current collections, each with its translations
     /// and the user's own answers. Reads each table once instead of once per
     /// word.
     pub async fn candidates(&self, user_id: UserId) -> Result<Vec<Candidate>, sqlx::Error> {
-        let loaded = self.load_candidates(user_id, None).await?;
-        Ok(loaded.into_iter().map(|item| item.candidate).collect())
-    }
-
-    async fn load_candidates(
-        &self,
-        user_id: UserId,
-        collection_id: Option<CollectionId>,
-    ) -> Result<Vec<Loaded>, sqlx::Error> {
-        let words: Vec<(WordId, CollectionId, String, String)> = sqlx::query_as(concat!(
-            "SELECT w.id, w.collection_id, w.term, w.term_norm FROM words w ",
+        let collection_id: Option<CollectionId> = None;
+        let words: Vec<(WordId, CollectionId, String)> = sqlx::query_as(concat!(
+            "SELECT w.id, w.collection_id, w.term FROM words w ",
             member_words_filter!(),
             "ORDER BY w.id",
         ))
@@ -145,19 +131,16 @@ impl Storage {
         .bind(collection_id)
         .fetch_all(&self.pool)
         .await?;
-        let mut loaded: Vec<Loaded> = Vec::with_capacity(words.len());
+        let mut loaded: Vec<Candidate> = Vec::with_capacity(words.len());
         let mut by_word: HashMap<WordId, usize> = HashMap::with_capacity(words.len());
-        for (word_id, collection_id, term, term_norm) in words {
+        for (word_id, collection_id, term) in words {
             by_word.insert(word_id, loaded.len());
-            loaded.push(Loaded {
-                candidate: Candidate {
-                    word_id,
-                    collection_id,
-                    term,
-                    translations: Vec::new(),
-                    answers: Vec::new(),
-                },
-                term_norm,
+            loaded.push(Candidate {
+                word_id,
+                collection_id,
+                term,
+                translations: Vec::new(),
+                answers: Vec::new(),
             });
         }
 
@@ -172,7 +155,7 @@ impl Storage {
         .await?;
         for (word_id, text) in translations {
             if let Some(&position) = by_word.get(&word_id) {
-                loaded[position].candidate.translations.push(text);
+                loaded[position].translations.push(text);
             }
         }
 
@@ -188,7 +171,7 @@ impl Storage {
         .await?;
         for (word_id, answered_at, is_correct) in answers {
             if let Some(&position) = by_word.get(&word_id) {
-                loaded[position].candidate.answers.push(AnswerRecord {
+                loaded[position].answers.push(AnswerRecord {
                     answered_at,
                     is_correct,
                 });
@@ -307,11 +290,12 @@ impl Storage {
         let translations = Self::word_translations(&mut *transaction, word_id).await?;
         // Options are frozen at creation, but a member may have imported one of
         // them as a translation of this word since.
-        let chosen = Normalized::new(&options[chosen_index]);
-        let is_correct = chosen_index as i64 == correct_index
-            || translations
+        let is_correct = chosen_index as i64 == correct_index || {
+            let chosen = Normalized::new(&options[chosen_index]);
+            translations
                 .iter()
-                .any(|translation| Normalized::new(translation) == chosen);
+                .any(|translation| Normalized::new(translation) == chosen)
+        };
         // The write lock has kept the row open since the SELECT above.
         sqlx::query(
             "UPDATE quizzes SET answered_at = ?, chosen_index = ?, is_correct = ? \
@@ -394,21 +378,47 @@ impl Storage {
         selection: &SelectionConfig,
     ) -> Result<CollectionStats, sqlx::Error> {
         let word_count = self.count_words(collection_id).await?;
-        let loaded = self.load_candidates(user_id, Some(collection_id)).await?;
-        let (mut answered, mut correct) = (0, 0);
-        let mut ranked: Vec<(f64, String, String)> = Vec::new();
-        for item in loaded {
-            let answers = &item.candidate.answers;
-            answered += answers.len() as i64;
-            correct += answers.iter().filter(|answer| answer.is_correct).count() as i64;
-            if !answers.is_empty() {
-                ranked.push((
-                    selection.error_rate(answers, now),
-                    item.term_norm,
-                    item.candidate.term,
-                ));
-            }
+        let collection_id = Some(collection_id);
+        let rows: Vec<(WordId, Timestamp, bool)> = sqlx::query_as(concat!(
+            "SELECT q.word_id, q.answered_at, q.is_correct FROM quizzes q \
+             JOIN words w ON w.id = q.word_id ",
+            member_words_filter!(),
+            "AND q.user_id = ?1 AND q.answered_at IS NOT NULL ORDER BY q.id",
+        ))
+        .bind(user_id)
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let answered = rows.len() as i64;
+        let correct = rows
+            .iter()
+            .filter(|&&(_, _, is_correct)| is_correct)
+            .count() as i64;
+        let mut answers: HashMap<WordId, Vec<AnswerRecord>> = HashMap::new();
+        for (word_id, answered_at, is_correct) in rows {
+            answers.entry(word_id).or_default().push(AnswerRecord {
+                answered_at,
+                is_correct,
+            });
         }
+        // Only answered words: their normalized term breaks error-rate ties.
+        let words: Vec<(WordId, String, String)> = sqlx::query_as(concat!(
+            "SELECT w.id, w.term, w.term_norm FROM words w ",
+            member_words_filter!(),
+            "AND EXISTS (SELECT 1 FROM quizzes q WHERE q.word_id = w.id \
+             AND q.user_id = ?1 AND q.answered_at IS NOT NULL)",
+        ))
+        .bind(user_id)
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut ranked: Vec<(f64, String, String)> = words
+            .into_iter()
+            .filter_map(|(word_id, term, term_norm)| {
+                let word_answers = answers.get(&word_id)?;
+                Some((selection.error_rate(word_answers, now), term_norm, term))
+            })
+            .collect();
         ranked.sort_by(|left, right| {
             right
                 .0
