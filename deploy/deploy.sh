@@ -12,6 +12,7 @@ mkdir -p "$out"
 docker run --rm \
     -v "$PWD:/src:ro" \
     -v wordropbot-cargo:/usr/local/cargo/registry \
+    -v wordropbot-rustup:/usr/local/rustup \
     -v wordropbot-target:/target \
     -v "$out:/out" \
     -w /src \
