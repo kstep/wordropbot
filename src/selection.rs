@@ -1,8 +1,4 @@
 use chrono::{DateTime, Utc};
-use rand::{
-    Rng,
-    distr::{Distribution, weighted::WeightedIndex},
-};
 use serde::Deserialize;
 
 use crate::config::SelectionConfig;
@@ -39,29 +35,8 @@ impl SelectionConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Weights(Vec<f64>);
-
-impl FromIterator<f64> for Weights {
-    fn from_iter<I: IntoIterator<Item = f64>>(iter: I) -> Weights {
-        Weights(iter.into_iter().collect())
-    }
-}
-
-impl Weights {
-    /// Picks an index proportionally to the weights; `None` if empty or all
-    /// zero/invalid.
-    pub fn pick<R: Rng + ?Sized>(&self, random_generator: &mut R) -> Option<usize> {
-        WeightedIndex::new(&self.0)
-            .ok()
-            .map(|distribution| distribution.sample(random_generator))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
-
     use super::*;
     use crate::testing::timestamp;
 
@@ -77,9 +52,6 @@ mod tests {
             };
             count
         ]
-    }
-    fn weights(values: &[f64]) -> Weights {
-        values.iter().copied().collect()
     }
     #[test]
     fn word_weight_follows_answer_history() {
@@ -132,11 +104,5 @@ mod tests {
             ..config()
         };
         assert!((config.word_weight(&correct(0, 1000), timestamp(0)) - 0.05).abs() < 1e-9);
-    }
-    #[test]
-    fn pick_handles_edges() {
-        let mut random_generator = StdRng::seed_from_u64(1);
-        assert_eq!(weights(&[]).pick(&mut random_generator), None);
-        assert_eq!(weights(&[0.0, 1.0]).pick(&mut random_generator), Some(1));
     }
 }

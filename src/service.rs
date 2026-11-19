@@ -6,7 +6,11 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{
+    Rng, SeedableRng,
+    distr::{Distribution, weighted::WeightedIndex},
+    rngs::StdRng,
+};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     task,
@@ -17,7 +21,6 @@ use crate::{
     ids::{CollectionId, MessageId, QuizId, UserId, WordId},
     import::NormalizedText,
     quiz::QuizOptions,
-    selection::Weights,
     storage::{Candidate, Storage},
 };
 
@@ -64,7 +67,7 @@ impl ChosenQuiz {
     ) -> Option<ChosenQuiz> {
         let distractors_needed = config.quiz.options.saturating_sub(1);
         let eligible = ChosenQuiz::eligible_words(candidates, distractors_needed);
-        let weights: Weights = candidates
+        let weights = candidates
             .iter()
             .zip(&eligible)
             .map(|(candidate, &is_eligible)| {
@@ -73,9 +76,10 @@ impl ChosenQuiz {
                 } else {
                     0.0
                 }
-            })
-            .collect();
-        let candidate = &candidates[weights.pick(random_generator)?];
+            });
+        // Fails when no candidate has weight, that is none is eligible.
+        let distribution = WeightedIndex::new(weights).ok()?;
+        let candidate = &candidates[distribution.sample(random_generator)];
         // Distractors come from the word's own collection.
         let pool = candidates
             .iter()

@@ -24,8 +24,8 @@ use crate::{
         limiter::JoinLimiter,
         page::Page,
         texts::{
-            AnswerResult, Help, ImportReport, LimitedWriter, MissingCollectionHint, PAUSED_NOTE,
-            StatsReport, WORDS_PAGE_SIZE, WordShortageHint, WordsPage,
+            self, PAUSED_NOTE, WORDS_PAGE_SIZE, message_text, missing_collection_hint,
+            write_word_shortage_hint,
         },
     },
     code::Code,
@@ -87,51 +87,50 @@ impl View {
     fn collections(collections: &[CollectionSummary], page: Page) -> View {
         let last = Page::last_for(collections.len(), COLLECTIONS_PAGE_SIZE);
         let page = page.min(last);
-        let mut text = String::new();
-        let mut output = LimitedWriter::message(&mut text);
-        // Writing to a String cannot fail.
-        let _ = if last > Page::FIRST {
-            write!(
-                output,
-                "Твои коллекции, страница {} из {}:",
-                page.number(),
-                last.number()
-            )
-        } else {
-            output.write_str("Твои коллекции:")
-        };
         let mut rows = Vec::new();
         let shown = collections
             .iter()
             .skip(page.offset(COLLECTIONS_PAGE_SIZE) as usize)
             .take(COLLECTIONS_PAGE_SIZE as usize);
-        for collection in shown {
-            let mark = if collection.is_active {
-                " (активная)"
+        let text = message_text(|output| {
+            if last > Page::FIRST {
+                write!(
+                    output,
+                    "Твои коллекции, страница {} из {}:",
+                    page.number(),
+                    last.number()
+                )?;
             } else {
-                ""
-            };
-            let _ = write!(
-                output,
-                "\n{} — {}, слов: {}{mark}",
-                collection.name, collection.code, collection.word_count
-            );
-            let name_end = collection
-                .name
-                .char_indices()
-                .nth(BUTTON_NAME_CHARS)
-                .map_or(collection.name.len(), |(index, _)| index);
-            let name = &collection.name[..name_end];
-            rows.push(vec![
-                CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
-                CallbackAction::LeaveAsk(collection.id).button("Выйти"),
-            ]);
-        }
+                output.write_str("Твои коллекции:")?;
+            }
+            for collection in shown {
+                let mark = if collection.is_active {
+                    " (активная)"
+                } else {
+                    ""
+                };
+                write!(
+                    output,
+                    "\n{} — {}, слов: {}{mark}",
+                    collection.name, collection.code, collection.word_count
+                )?;
+                let name_end = collection
+                    .name
+                    .char_indices()
+                    .nth(BUTTON_NAME_CHARS)
+                    .map_or(collection.name.len(), |(index, _)| index);
+                let name = &collection.name[..name_end];
+                rows.push(vec![
+                    CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
+                    CallbackAction::LeaveAsk(collection.id).button("Выйти"),
+                ]);
+            }
+            Ok(())
+        });
         let navigation = View::navigation(page, last, CallbackAction::CollectionsPage);
         if !navigation.is_empty() {
             rows.push(navigation);
         }
-        let _ = output.finish();
         View {
             text,
             keyboard: Some(InlineKeyboardMarkup::new(rows)),
@@ -179,12 +178,7 @@ impl View {
             .await?;
         let row = View::navigation(page, last, CallbackAction::WordsPage);
         Ok(View {
-            text: WordsPage {
-                words: &words,
-                page,
-                last,
-            }
-            .to_string(),
+            text: texts::words_page(&words, page, last),
             keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
         })
     }
@@ -317,11 +311,8 @@ impl Handlers {
     }
 
     async fn help(&self, user: UserId, paused: bool) -> Reply {
-        let help = Help {
-            quiz_options: self.config.quiz.options,
-            paused,
-        };
-        self.say(user, help.to_string()).await
+        self.say(user, texts::help(self.config.quiz.options, paused))
+            .await
     }
 
     async fn collection_new(&self, user: UserId, name: &str) -> Reply {
@@ -421,12 +412,7 @@ impl Handlers {
         };
         let report = ParseReport::parse(text, &self.config.limits);
         let summary = self.storage.import_pairs(collection, &report.pairs).await?;
-        let mut reply = ImportReport {
-            summary: &summary,
-            bad_lines: &report.bad_lines,
-            limits: &self.config.limits,
-        }
-        .to_string();
+        let mut reply = summary.report(&report.bad_lines, &self.config.limits);
         if report.pairs.is_empty() {
             reply.push_str("\n\n");
             reply.push_str(IMPORT_FORMAT);
@@ -435,10 +421,9 @@ impl Handlers {
             match self.service.has_eligible_words(user.id, Utc::now()).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    let hint = WordShortageHint {
-                        quiz_options: self.config.quiz.options,
-                    };
-                    let _ = write!(reply, "\n\n{hint}");
+                    reply.push_str("\n\n");
+                    // Writing to a String cannot fail.
+                    let _ = write_word_shortage_hint(&mut reply, self.config.quiz.options);
                 }
                 Err(error) => {
                     tracing::warn!(user = %user.id, %error, "checking eligible words after import failed");
@@ -484,7 +469,7 @@ impl Handlers {
             .storage
             .collection_stats(user.id, collection, Utc::now(), &self.config.selection)
             .await?;
-        self.say(user.id, StatsReport(&stats).to_string()).await
+        self.say(user.id, stats.report()).await
     }
 
     async fn period(&self, user: UserId, raw: &str) -> Reply {
@@ -551,8 +536,8 @@ impl Handlers {
             .storage
             .answer_quiz(quiz, press.user, index, Utc::now())
             .await?;
-        match AnswerResult::new(&outcome) {
-            Some(result) => Ok(self.show_committed(press, &result.to_string()).await),
+        match outcome.text() {
+            Some(text) => Ok(self.show_committed(press, &text).await),
             None => Ok(Some("Этот квиз уже закрыт.")),
         }
     }
@@ -668,7 +653,7 @@ impl Handlers {
     /// when they already have collections to pick from.
     async fn no_collection(&self, user: UserId) -> Reply {
         let has_collections = self.storage.has_collections(user).await?;
-        self.say(user, MissingCollectionHint { has_collections }.to_string())
+        self.say(user, missing_collection_hint(has_collections))
             .await
     }
 
