@@ -24,7 +24,7 @@ pub const FAKE_MESSAGE_ID: MessageId = MessageId(777);
 const FIXTURE_CODE: &str = "K7QM-3XPA";
 
 pub fn timestamp(seconds: i64) -> Timestamp {
-    Timestamp::from_secs(seconds)
+    Timestamp::from_secs(seconds).unwrap()
 }
 
 pub fn user_id(id: i64) -> UserId {
