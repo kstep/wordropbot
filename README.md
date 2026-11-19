@@ -21,40 +21,39 @@ cargo build --release
 
 Бинарник: `target/release/wordropbot`.
 
-## Установка на сервер (systemd)
+## Установка на сервер
+
+Бот работает под отдельным пользователем как пользовательская служба systemd, так же как dancecrm на `cyprusswing.dance`. Один раз на сервере, от root:
 
 ```sh
-# бинарник
-sudo install -m 755 target/release/wordropbot /usr/local/bin/wordropbot
-
-# системный пользователь
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin wordropbot
+useradd --create-home wordropbot
+loginctl enable-linger wordropbot
+install -d -o wordropbot -g wordropbot ~wordropbot/bin ~wordropbot/bot ~wordropbot/.config/systemd/user
 
 # конфиг с токеном
-sudo install -d -o root -g wordropbot -m 750 /etc/wordropbot
-sudo install -o root -g wordropbot -m 640 deploy/config.example.toml /etc/wordropbot/config.toml
-sudoedit /etc/wordropbot/config.toml   # вписать токен вместо PUT_BOT_TOKEN_HERE
+install -o wordropbot -g wordropbot -m 600 config.example.toml ~wordropbot/bot/config.toml
+editor ~wordropbot/bot/config.toml   # вписать токен вместо PUT_BOT_TOKEN_HERE
 
 # служба
-sudo install -m 644 deploy/wordropbot.service /etc/systemd/system/wordropbot.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now wordropbot
+install -o wordropbot -g wordropbot -m 644 wordropbot.service ~wordropbot/.config/systemd/user/
+systemctl --user -M wordropbot@ daemon-reload
+systemctl --user -M wordropbot@ enable wordropbot
 ```
 
-База лежит в `/var/lib/wordropbot/`, каталог создаёт systemd (`StateDirectory`).
+`config.example.toml` и `wordropbot.service` берутся из `deploy/`. База создаётся в `~wordropbot/bot/wordropbot.db`.
+
+## Деплой
+
+```sh
+deploy/deploy.sh
+```
+
+Скрипт собирает бинарник в контейнере `rust:1-bookworm`, чтобы он работал со старой glibc сервера, копирует его в `~wordropbot/bin/` и перезапускает службу. Сервер и пользователь задаются переменными `DEPLOY_HOST` и `DEPLOY_USER`.
 
 ## Журнал
 
 ```sh
-journalctl -u wordropbot -f
-```
-
-## Обновление
-
-```sh
-cargo build --release
-sudo install -m 755 target/release/wordropbot /usr/local/bin/wordropbot
-sudo systemctl restart wordropbot
+journalctl --user -M wordropbot@ -u wordropbot -f
 ```
 
 ## Команды бота
