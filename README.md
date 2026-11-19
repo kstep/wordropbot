@@ -53,7 +53,7 @@ deploy/deploy.sh
 ## Журнал
 
 ```sh
-journalctl --user -M wordropbot@ -u wordropbot -f
+journalctl _SYSTEMD_USER_UNIT=wordropbot.service -f
 ```
 
 ## Команды бота
