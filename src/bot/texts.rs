@@ -55,29 +55,31 @@ fn plural(count: u64, forms: [&'static str; 3]) -> &'static str {
     }
 }
 
-/// A period in Russian, in the form that follows «раз в»: «1 день»,
-/// «2 часа 30 минут», «1 минуту».
-pub fn period_text(period: Period) -> String {
-    const UNITS: [(u32, [&str; 3]); 4] = [
-        (86_400, ["день", "дня", "дней"]),
-        (3_600, ["час", "часа", "часов"]),
-        (60, ["минуту", "минуты", "минут"]),
-        (1, ["секунду", "секунды", "секунд"]),
-    ];
-    let mut seconds = period.as_secs();
-    let mut text = String::new();
-    for (unit, forms) in UNITS {
-        let count = seconds / unit;
-        seconds %= unit;
-        if count > 0 {
-            if !text.is_empty() {
-                text.push(' ');
+impl Period {
+    /// The period in Russian, in the form that follows «раз в»: «1 день»,
+    /// «2 часа 30 минут», «1 минуту».
+    pub fn text(self) -> String {
+        const UNITS: [(u32, [&str; 3]); 4] = [
+            (86_400, ["день", "дня", "дней"]),
+            (3_600, ["час", "часа", "часов"]),
+            (60, ["минуту", "минуты", "минут"]),
+            (1, ["секунду", "секунды", "секунд"]),
+        ];
+        let mut seconds = self.as_secs();
+        let mut text = String::new();
+        for (unit, forms) in UNITS {
+            let count = seconds / unit;
+            seconds %= unit;
+            if count > 0 {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                // Writing to a String cannot fail.
+                let _ = write!(text, "{count} {}", plural(count.into(), forms));
             }
-            // Writing to a String cannot fail.
-            let _ = write!(text, "{count} {}", plural(count.into(), forms));
         }
+        text
     }
-    text
 }
 
 /// The help message, which also names the user's period and how many words a
@@ -93,7 +95,7 @@ pub fn help(quiz_options: usize, period: Period, paused: bool) -> String {
         text,
         "{HELP}\n\nКвизы приходят раз в {}, изменить: /period 2h. \
          Они начнутся, когда в коллекции будет минимум {quiz_options} {} с разными переводами.",
-        period_text(period),
+        period.text(),
         word_noun(quiz_options)
     );
     text
@@ -534,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn period_reads_in_russian() {
+    fn period_text_is_russian() {
         for (seconds, expected) in [
             (1, "1 секунду"),
             (60, "1 минуту"),
@@ -546,7 +548,7 @@ mod tests {
             (1_814_400, "21 день"),
             (31_536_000, "365 дней"),
         ] {
-            assert_eq!(period_text(period(seconds)), expected, "{seconds}");
+            assert_eq!(period(seconds).text(), expected, "{seconds}");
         }
     }
 

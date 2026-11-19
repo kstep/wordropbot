@@ -27,8 +27,7 @@ use crate::{
         page::Page,
         rich::{EditRichMessage, SendRichMessage},
         texts::{
-            self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, period_text,
-            write_word_shortage_hint,
+            self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, write_word_shortage_hint,
         },
     },
     code::Code,
@@ -382,7 +381,7 @@ impl Handlers {
     async fn show_period(&self, user: User) -> Reply {
         let mut text = format!(
             "Квизы приходят раз в {}. Изменить: /period 30m, /period 2h, /period 1d.",
-            period_text(user.period)
+            user.period.text()
         );
         if user.paused {
             text.push('\n');
@@ -567,13 +566,13 @@ impl Handlers {
             return self
                 .say(
                     user,
-                    format!("Чаще, чем раз в {}, квизы не приходят.", period_text(min)),
+                    format!("Чаще, чем раз в {}, квизы не приходят.", min.text()),
                 )
                 .await;
         }
         let quiz_open = self.storage.set_period(user, period, Utc::now()).await?;
         let text = Self::with_open_quiz_note(
-            format!("Теперь квизы приходят раз в {}.", period_text(period)),
+            format!("Теперь квизы приходят раз в {}.", period.text()),
             quiz_open,
         );
         self.say(user, text).await
