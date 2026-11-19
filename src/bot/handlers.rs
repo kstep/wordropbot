@@ -10,7 +10,7 @@ use teloxide::{
     errors::ApiError,
     prelude::*,
     types::{
-        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity,
         MessageId as TgMessageId,
     },
 };
@@ -24,8 +24,8 @@ use crate::{
         limiter::JoinLimiter,
         page::Page,
         texts::{
-            self, PAUSED_NOTE, WORDS_PAGE_SIZE, message_text, missing_collection_hint,
-            write_word_shortage_hint,
+            self, PAUSED_NOTE, WORDS_PAGE_SIZE, code_entities, message_text,
+            missing_collection_hint, write_word_shortage_hint,
         },
     },
     code::Code,
@@ -80,18 +80,26 @@ struct Press {
 struct View {
     text: String,
     keyboard: Option<InlineKeyboardMarkup>,
+    entities: Vec<MessageEntity>,
 }
 
 impl View {
+    fn plain(text: impl Into<String>) -> View {
+        View {
+            text: text.into(),
+            keyboard: None,
+            entities: Vec::new(),
+        }
+    }
+
     /// One page of the collection list; the page is clamped to the valid range.
     fn collections(collections: &[CollectionSummary], page: Page) -> View {
         let last = Page::last_for(collections.len(), COLLECTIONS_PAGE_SIZE);
         let page = page.min(last);
         let mut rows = Vec::new();
-        let shown = collections
-            .iter()
-            .skip(page.offset(COLLECTIONS_PAGE_SIZE) as usize)
-            .take(COLLECTIONS_PAGE_SIZE as usize);
+        let start = (page.offset(COLLECTIONS_PAGE_SIZE) as usize).min(collections.len());
+        let end = (start + COLLECTIONS_PAGE_SIZE as usize).min(collections.len());
+        let shown = &collections[start..end];
         let text = message_text(|output| {
             if last > Page::FIRST {
                 write!(
@@ -131,9 +139,14 @@ impl View {
         if !navigation.is_empty() {
             rows.push(navigation);
         }
+        let entities = code_entities(
+            &text,
+            shown.iter().map(|collection| collection.code.as_str()),
+        );
         View {
             text,
             keyboard: Some(InlineKeyboardMarkup::new(rows)),
+            entities,
         }
     }
 
@@ -166,10 +179,7 @@ impl View {
     ) -> Result<View, sqlx::Error> {
         let total = storage.count_words(collection).await?;
         if total == 0 {
-            return Ok(View {
-                text: "В коллекции пока нет слов.".into(),
-                keyboard: None,
-            });
+            return Ok(View::plain("В коллекции пока нет слов."));
         }
         let last = Page::last_for(total as usize, WORDS_PAGE_SIZE);
         let page = page.min(last);
@@ -180,6 +190,7 @@ impl View {
         Ok(View {
             text: texts::words_page(&words, page, last),
             keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
+            entities: Vec::new(),
         })
     }
 }
@@ -346,14 +357,21 @@ impl Handlers {
                 }
                 Err(CollectionError::Storage(error)) => return Err(error.into()),
             };
-            let text = format!(
-                "Коллекция «{}» создана и выбрана активной.\nКод для подключения: {}\n\
-                 Теперь отправь слова обычным сообщением.",
-                collection.name, collection.code
+            let mut text = format!(
+                "Коллекция «{}» создана и выбрана активной.\nКод для подключения: ",
+                collection.name
             );
+            let entity =
+                MessageEntity::code(text.encode_utf16().count(), collection.code.as_str().len());
+            let _ = write!(text, "{}\n\n{IMPORT_FORMAT}", collection.code);
+            let view = View {
+                text,
+                keyboard: None,
+                entities: vec![entity],
+            };
             // The collection is saved: the apology path would invite a retry
             // that creates a second one.
-            if let Err(error) = self.say(user, text).await {
+            if let Err(error) = self.show(user, view).await {
                 tracing::warn!(%user, %error, "reporting created collection failed");
             }
             return Ok(());
@@ -373,12 +391,12 @@ impl Handlers {
         }
         let Ok(code): Result<Code, _> = raw.parse() else {
             self.limiter().record_failure(user, now);
-            return self
-                .say(
-                    user,
-                    "Код выглядит неверно: нужно 8 символов, например K7QM-3XPA.",
-                )
-                .await;
+            let text = "Код выглядит неверно: нужно 8 символов, например K7QM-3XPA.";
+            let view = View {
+                entities: code_entities(text, ["K7QM-3XPA"]),
+                ..View::plain(text)
+            };
+            return self.show(user, view).await;
         };
         match self.storage.join_collection(user, &code, now).await {
             Ok(Some(collection)) => {
@@ -403,7 +421,7 @@ impl Handlers {
             return self.no_collection(user).await;
         }
         let view = View::collections(&collections, Page::FIRST);
-        self.say_with(user, view.text, view.keyboard).await
+        self.show(user, view).await
     }
 
     async fn import_text(&self, user: User, text: &str) -> Reply {
@@ -438,7 +456,7 @@ impl Handlers {
             return Ok(());
         };
         let view = View::words(&self.storage, collection, Page::FIRST).await?;
-        self.say_with(user.id, view.text, view.keyboard).await
+        self.show(user.id, view).await
     }
 
     async fn remove(&self, user: User, term: &str) -> Reply {
@@ -458,7 +476,11 @@ impl Handlers {
             CallbackAction::RemoveConfirm(word.id).button("Удалить"),
             CallbackAction::Dismiss.button("Отмена"),
         ]]);
-        self.say_with(user.id, text, Some(keyboard)).await
+        let view = View {
+            keyboard: Some(keyboard),
+            ..View::plain(text)
+        };
+        self.show(user.id, view).await
     }
 
     async fn stats(&self, user: User) -> Reply {
@@ -558,7 +580,7 @@ impl Handlers {
         let collections = self.storage.list_collections(press.user).await?;
         let page = View::collections_page_of(&collections, id);
         let view = View::collections(&collections, page);
-        self.edit(press, view.text, view.keyboard).await
+        self.edit(press, view).await
     }
 
     async fn collections_page(&self, press: Press, page: Page) -> Reply<Notice> {
@@ -567,7 +589,7 @@ impl Handlers {
             return Ok(Some("У тебя нет коллекций."));
         }
         let view = View::collections(&collections, page);
-        self.edit(press, view.text, view.keyboard).await?;
+        self.edit(press, view).await?;
         Ok(None)
     }
 
@@ -619,7 +641,7 @@ impl Handlers {
             return Ok(Some("Активной коллекции нет."));
         };
         let view = View::words(&self.storage, collection, page).await?;
-        self.edit(press, view.text, view.keyboard).await?;
+        self.edit(press, view).await?;
         Ok(None)
     }
 
@@ -676,18 +698,16 @@ impl Handlers {
     }
 
     async fn say(&self, user: UserId, text: impl Into<String>) -> Reply {
-        self.say_with(user, text, None).await
+        self.show(user, View::plain(text)).await
     }
 
-    async fn say_with(
-        &self,
-        user: UserId,
-        text: impl Into<String>,
-        keyboard: Option<InlineKeyboardMarkup>,
-    ) -> Reply {
-        let mut request = self.bot.send_message(ChatId::from(user), text);
-        if let Some(keyboard) = keyboard {
+    async fn show(&self, user: UserId, view: View) -> Reply {
+        let mut request = self.bot.send_message(ChatId::from(user), view.text);
+        if let Some(keyboard) = view.keyboard {
             request = request.reply_markup(keyboard);
+        }
+        if !view.entities.is_empty() {
+            request = request.entities(view.entities);
         }
         request.await?;
         Ok(())
@@ -697,7 +717,7 @@ impl Handlers {
     /// must not reach the apology path, since a retry would be wrong: send a
     /// new message instead.
     async fn show_committed(&self, press: Press, text: &str) -> Notice {
-        let Err(error) = self.edit(press, text.to_owned(), None).await else {
+        let Err(error) = self.edit(press, View::plain(text)).await else {
             return None;
         };
         tracing::warn!(user = %press.user, %error, "editing message with result failed");
@@ -708,17 +728,15 @@ impl Handlers {
     }
 
     /// Replaces the pressed message; no keyboard removes the old one.
-    async fn edit(
-        &self,
-        press: Press,
-        text: String,
-        keyboard: Option<InlineKeyboardMarkup>,
-    ) -> Reply {
-        let mut request = self
-            .bot
-            .edit_message_text(ChatId::from(press.user), press.message, text);
-        if let Some(keyboard) = keyboard {
+    async fn edit(&self, press: Press, view: View) -> Reply {
+        let mut request =
+            self.bot
+                .edit_message_text(ChatId::from(press.user), press.message, view.text);
+        if let Some(keyboard) = view.keyboard {
             request = request.reply_markup(keyboard);
+        }
+        if !view.entities.is_empty() {
+            request = request.entities(view.entities);
         }
         match request.await {
             // Paging to the page already shown changes nothing.
@@ -805,6 +823,38 @@ mod tests {
         }
         let last = View::collections(&collections, Page::new(99));
         assert!(callback_data(&last).contains(&"c:59".to_owned()));
+    }
+
+    #[test]
+    fn collection_codes_are_monospace() {
+        let collections: Vec<CollectionSummary> = (0..12)
+            .map(|id| {
+                summary(
+                    id,
+                    if id % 2 == 0 {
+                        "K7QM-3XPA"
+                    } else {
+                        "AAAA-AAAA"
+                    },
+                    false,
+                )
+            })
+            .collect();
+        let view = View::collections(&collections, Page::new(1));
+        assert_eq!(view.entities.len(), 2);
+        for entity in &view.entities {
+            let code: String = view
+                .text
+                .encode_utf16()
+                .skip(entity.offset)
+                .take(entity.length)
+                .map(|unit| char::from_u32(u32::from(unit)).unwrap())
+                .collect();
+            assert!(
+                ["K7QM-3XPA", "AAAA-AAAA"].contains(&code.as_str()),
+                "{code}"
+            );
+        }
     }
 
     #[test]

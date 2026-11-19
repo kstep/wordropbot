@@ -1,5 +1,7 @@
 use std::fmt::{self, Write as _};
 
+use teloxide::types::MessageEntity;
+
 use crate::{
     bot::page::Page,
     config::{LimitsConfig, MAX_MESSAGE_CHARS},
@@ -159,6 +161,28 @@ pub fn message_text(write: impl FnOnce(&mut LimitedWriter<&mut String>) -> fmt::
     text
 }
 
+/// Entities that show codes in monospace, each at its first occurrence after
+/// the previous one. A code cut off with the end of the text gets none.
+pub fn code_entities<'a>(
+    text: &str,
+    codes: impl IntoIterator<Item = &'a str>,
+) -> Vec<MessageEntity> {
+    let mut entities = Vec::new();
+    let (mut start, mut offset) = (0, 0);
+    for code in codes {
+        let Some(position) = text[start..].find(code) else {
+            continue;
+        };
+        // Telegram counts offsets in UTF-16 code units.
+        offset += text[start..start + position].encode_utf16().count();
+        let length = code.encode_utf16().count();
+        entities.push(MessageEntity::code(offset, length));
+        offset += length;
+        start += position + code.len();
+    }
+    entities
+}
+
 fn write_joined(output: &mut impl fmt::Write, items: &[String]) -> fmt::Result {
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
@@ -287,6 +311,15 @@ impl CollectionStats {
 mod tests {
     use super::*;
     use crate::{ids::WordId, storage::HardWord};
+
+    #[test]
+    fn code_entities_count_utf16_units() {
+        let text = "Щ 😀 K7QM-3XPA и AAAA-AAAA";
+        assert_eq!(
+            code_entities(text, ["K7QM-3XPA", "BBBB-BBBB", "AAAA-AAAA"]),
+            [MessageEntity::code(5, 9), MessageEntity::code(17, 9)]
+        );
+    }
 
     fn truncated(text: &str) -> String {
         message_text(|output| output.write_str(text))
