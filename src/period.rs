@@ -6,12 +6,12 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 
 use crate::ids::validated_sqlite_type;
 
-const MAX_SECS: u64 = 365 * 86_400;
+const MAX_SECS: u32 = 365 * 86_400;
 
 /// Whole seconds from one up to a year, so adding it to the current moment
 /// never overflows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Period(i64);
+pub struct Period(u32);
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ParsePeriodError {
@@ -23,12 +23,13 @@ pub enum ParsePeriodError {
 
 impl Period {
     pub fn from_secs(seconds: u64) -> Option<Period> {
-        (1..=MAX_SECS)
-            .contains(&seconds)
-            .then_some(Period(seconds as i64))
+        u32::try_from(seconds)
+            .ok()
+            .filter(|seconds| (1..=MAX_SECS).contains(seconds))
+            .map(Period)
     }
 
-    pub fn as_secs(self) -> i64 {
+    pub fn as_secs(self) -> u32 {
         self.0
     }
 }
@@ -48,23 +49,20 @@ impl fmt::Display for Period {
         write!(
             formatter,
             "{}",
-            humantime::format_duration(Duration::from_secs(self.0 as u64))
+            humantime::format_duration(Duration::from_secs(self.0.into()))
         )
     }
 }
 
-validated_sqlite_type!(Period, i64, i64, |seconds: i64| {
-    u64::try_from(seconds)
-        .ok()
-        .and_then(Period::from_secs)
-        .ok_or(ParsePeriodError::OutOfRange)
+validated_sqlite_type!(Period, u32, u32, |seconds: u32| {
+    Period::from_secs(seconds.into()).ok_or(ParsePeriodError::OutOfRange)
 });
 
 impl Add<Period> for DateTime<Utc> {
     type Output = DateTime<Utc>;
 
     fn add(self, period: Period) -> DateTime<Utc> {
-        self + TimeDelta::seconds(period.0)
+        self + TimeDelta::seconds(period.0.into())
     }
 }
 
@@ -115,8 +113,9 @@ mod tests {
     #[test]
     fn from_secs_checks_range() {
         assert_eq!(Period::from_secs(0), None);
-        assert_eq!(Period::from_secs(MAX_SECS).unwrap().as_secs(), 31_536_000);
-        assert_eq!(Period::from_secs(MAX_SECS + 1), None);
+        assert_eq!(Period::from_secs(31_536_000).unwrap().as_secs(), MAX_SECS);
+        assert_eq!(Period::from_secs(31_536_001), None);
+        assert_eq!(Period::from_secs(u64::MAX), None);
     }
 
     #[test]
