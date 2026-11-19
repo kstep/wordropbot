@@ -24,8 +24,7 @@ use crate::{
         limiter::JoinLimiter,
         page::Page,
         texts::{
-            self, PAUSED_NOTE, WORDS_PAGE_SIZE, code_entities, message_text,
-            missing_collection_hint, write_word_shortage_hint,
+            self, PAUSED_NOTE, WORDS_PAGE_SIZE, missing_collection_hint, write_word_shortage_hint,
         },
     },
     code::Code,
@@ -49,6 +48,8 @@ const IMPORT_FORMAT: &str = "\
 /// A fresh code collides with an existing one with negligible probability.
 const CODE_ATTEMPTS: usize = 5;
 const BUTTON_NAME_CHARS: usize = 30;
+/// Ten list lines with names this long stay within Telegram's message limit.
+const LIST_NAME_CHARS: usize = 200;
 /// Keeps one page within Telegram's limits on text and buttons.
 const COLLECTIONS_PAGE_SIZE: u32 = 10;
 const NOT_MEMBER_NOTICE: &str = "Ты не участник этой коллекции.";
@@ -92,62 +93,56 @@ impl View {
         }
     }
 
+    /// Appends `code` shown in monospace.
+    fn push_code(&mut self, code: &str) {
+        let offset = self.text.encode_utf16().count();
+        self.entities
+            .push(MessageEntity::code(offset, code.encode_utf16().count()));
+        self.text.push_str(code);
+    }
+
     /// One page of the collection list; the page is clamped to the valid range.
     fn collections(collections: &[CollectionSummary], page: Page) -> View {
         let last = Page::last_for(collections.len(), COLLECTIONS_PAGE_SIZE);
         let page = page.min(last);
-        let mut rows = Vec::new();
         let start = (page.offset(COLLECTIONS_PAGE_SIZE) as usize).min(collections.len());
         let end = (start + COLLECTIONS_PAGE_SIZE as usize).min(collections.len());
-        let shown = &collections[start..end];
-        let text = message_text(|output| {
-            if last > Page::FIRST {
-                write!(
-                    output,
-                    "Твои коллекции, страница {} из {}:",
-                    page.number(),
-                    last.number()
-                )?;
-            } else {
-                output.write_str("Твои коллекции:")?;
-            }
-            for collection in shown {
-                let mark = if collection.is_active {
-                    " (активная)"
-                } else {
-                    ""
-                };
-                write!(
-                    output,
-                    "\n{} — {}, слов: {}{mark}",
-                    collection.name, collection.code, collection.word_count
-                )?;
-                let name_end = collection
-                    .name
-                    .char_indices()
-                    .nth(BUTTON_NAME_CHARS)
-                    .map_or(collection.name.len(), |(index, _)| index);
-                let name = &collection.name[..name_end];
-                rows.push(vec![
-                    CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
-                    CallbackAction::LeaveAsk(collection.id).button("Выйти"),
-                ]);
-            }
-            Ok(())
+        let mut view = View::plain(if last > Page::FIRST {
+            format!(
+                "Твои коллекции, страница {} из {}:",
+                page.number(),
+                last.number()
+            )
+        } else {
+            String::from("Твои коллекции:")
         });
+        let mut rows = Vec::new();
+        for collection in &collections[start..end] {
+            let mark = if collection.is_active {
+                " (активная)"
+            } else {
+                ""
+            };
+            // Writing to a String cannot fail.
+            let _ = write!(
+                view.text,
+                "\n{} — ",
+                first_chars(&collection.name, LIST_NAME_CHARS)
+            );
+            view.push_code(collection.code.as_str());
+            let _ = write!(view.text, ", слов: {}{mark}", collection.word_count);
+            let name = first_chars(&collection.name, BUTTON_NAME_CHARS);
+            rows.push(vec![
+                CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
+                CallbackAction::LeaveAsk(collection.id).button("Выйти"),
+            ]);
+        }
         let navigation = View::navigation(page, last, CallbackAction::CollectionsPage);
         if !navigation.is_empty() {
             rows.push(navigation);
         }
-        let entities = code_entities(
-            &text,
-            shown.iter().map(|collection| collection.code.as_str()),
-        );
-        View {
-            text,
-            keyboard: Some(InlineKeyboardMarkup::new(rows)),
-            entities,
-        }
+        view.keyboard = Some(InlineKeyboardMarkup::new(rows));
+        view
     }
 
     /// The page of the list that shows this collection.
@@ -193,6 +188,15 @@ impl View {
             entities: Vec::new(),
         })
     }
+}
+
+/// The first `max_chars` characters of `text`.
+fn first_chars(text: &str, max_chars: usize) -> &str {
+    let end = text
+        .char_indices()
+        .nth(max_chars)
+        .map_or(text.len(), |(index, _)| index);
+    &text[..end]
 }
 
 pub struct Handlers {
@@ -357,18 +361,13 @@ impl Handlers {
                 }
                 Err(CollectionError::Storage(error)) => return Err(error.into()),
             };
-            let mut text = format!(
+            let mut view = View::plain(format!(
                 "Коллекция «{}» создана и выбрана активной.\nКод для подключения: ",
                 collection.name
-            );
-            let entity =
-                MessageEntity::code(text.encode_utf16().count(), collection.code.as_str().len());
-            let _ = write!(text, "{}\n\n{IMPORT_FORMAT}", collection.code);
-            let view = View {
-                text,
-                keyboard: None,
-                entities: vec![entity],
-            };
+            ));
+            view.push_code(collection.code.as_str());
+            view.text.push_str("\n\n");
+            view.text.push_str(IMPORT_FORMAT);
             // The collection is saved: the apology path would invite a retry
             // that creates a second one.
             if let Err(error) = self.show(user, view).await {
@@ -391,11 +390,9 @@ impl Handlers {
         }
         let Ok(code): Result<Code, _> = raw.parse() else {
             self.limiter().record_failure(user, now);
-            let text = "Код выглядит неверно: нужно 8 символов, например K7QM-3XPA.";
-            let view = View {
-                entities: code_entities(text, ["K7QM-3XPA"]),
-                ..View::plain(text)
-            };
+            let mut view = View::plain("Код выглядит неверно: нужно 8 символов, например ");
+            view.push_code("K7QM-3XPA");
+            view.text.push('.');
             return self.show(user, view).await;
         };
         match self.storage.join_collection(user, &code, now).await {
