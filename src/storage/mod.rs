@@ -22,9 +22,9 @@ use crate::config::LimitsConfig;
 /// Caps on user data, checked inside the transactions that write it.
 #[derive(Clone, Copy, Debug)]
 pub struct StorageLimits {
-    pub max_words_per_collection: usize,
-    pub max_translations_per_word: usize,
-    pub max_collections_per_user: usize,
+    pub max_words_per_collection: u32,
+    pub max_translations_per_word: u32,
+    pub max_collections_per_user: u32,
 }
 
 impl From<&LimitsConfig> for StorageLimits {

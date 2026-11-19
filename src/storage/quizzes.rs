@@ -63,9 +63,9 @@ pub enum AnswerOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollectionStats {
-    pub word_count: i64,
-    pub answered: i64,
-    pub correct: i64,
+    pub word_count: u32,
+    pub answered: usize,
+    pub correct: usize,
     pub hardest: Vec<HardWord>,
 }
 
@@ -166,7 +166,7 @@ impl Storage {
              HAVING COUNT(DISTINCT t.text_norm) >= ?)",
         )
         .bind(user_id)
-        .bind(options as i64)
+        .bind(options as u32)
         .fetch_one(&self.pool)
         .await
     }
@@ -190,7 +190,7 @@ impl Storage {
         .bind(user_id)
         .bind(word_id)
         .bind(Json(options))
-        .bind(correct_index as i64)
+        .bind(correct_index as u32)
         .bind(now)
         .fetch_optional(&self.pool)
         .await
@@ -241,7 +241,7 @@ impl Storage {
         now: DateTime<Utc>,
     ) -> Result<AnswerOutcome, sqlx::Error> {
         let mut transaction = self.begin_write().await?;
-        let row: Option<(WordId, Json<Vec<String>>, i64)> = sqlx::query_as(
+        let row: Option<(WordId, Json<Vec<String>>, u32)> = sqlx::query_as(
             "SELECT word_id, options, correct_index FROM quizzes \
              WHERE id = ? AND user_id = ? AND answered_at IS NULL",
         )
@@ -259,7 +259,7 @@ impl Storage {
         let translations = Self::word_translations(&mut *transaction, word_id).await?;
         // Options are frozen at creation, but a member may have imported one of
         // them as a translation of this word since.
-        let is_correct = chosen_index as i64 == correct_index || {
+        let is_correct = chosen_index == correct_index as usize || {
             let chosen = NormalizedText::new(&options[chosen_index]);
             translations
                 .iter()
@@ -271,7 +271,7 @@ impl Storage {
              WHERE id = ? AND user_id = ? AND answered_at IS NULL",
         )
         .bind(now)
-        .bind(chosen_index as i64)
+        .bind(chosen_index as u32)
         .bind(is_correct)
         .bind(quiz_id)
         .bind(user_id)
@@ -362,8 +362,8 @@ impl Storage {
         // The normalized term breaks error-rate ties.
         let mut ranked: Vec<(f64, String, String)> = Vec::with_capacity(rows.len());
         for (term, term_norm, Json(answers)) in rows {
-            answered += answers.len() as i64;
-            correct += answers.iter().filter(|answer| answer.is_correct).count() as i64;
+            answered += answers.len();
+            correct += answers.iter().filter(|answer| answer.is_correct).count();
             ranked.push((selection.error_rate(&answers, now), term_norm, term));
         }
         ranked.sort_by(|left, right| {

@@ -97,9 +97,9 @@ pub struct LimitsConfig {
     pub max_term_chars: usize,
     pub max_translation_chars: usize,
     pub join_attempts_per_minute: u32,
-    pub max_words_per_collection: usize,
-    pub max_translations_per_word: usize,
-    pub max_collections_per_user: usize,
+    pub max_words_per_collection: u32,
+    pub max_translations_per_word: u32,
+    pub max_collections_per_user: u32,
     pub max_pending_updates_per_user: usize,
 }
 

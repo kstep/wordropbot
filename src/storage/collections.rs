@@ -41,7 +41,7 @@ pub enum CollectionError {
     #[error("storage: {0}")]
     Storage(#[from] sqlx::Error),
     #[error("user already has the maximum of {max} collections")]
-    LimitReached { max: usize },
+    LimitReached { max: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -56,7 +56,7 @@ pub struct CollectionSummary {
     pub id: CollectionId,
     pub code: Code,
     pub name: String,
-    pub word_count: i64,
+    pub word_count: u32,
     pub is_active: bool,
 }
 
@@ -127,12 +127,12 @@ impl Storage {
         transaction: &mut SqliteConnection,
         user_id: UserId,
     ) -> Result<(), CollectionError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memberships WHERE user_id = ?")
+        let count: u32 = sqlx::query_scalar("SELECT COUNT(*) FROM memberships WHERE user_id = ?")
             .bind(user_id)
             .fetch_one(transaction)
             .await?;
         let max = self.limits.max_collections_per_user;
-        if count >= max as i64 {
+        if count >= max {
             return Err(CollectionError::LimitReached { max });
         }
         Ok(())

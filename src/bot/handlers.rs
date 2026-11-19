@@ -672,7 +672,7 @@ impl Handlers {
             .await
     }
 
-    fn collection_limit_text(max: usize) -> String {
+    fn collection_limit_text(max: u32) -> String {
         format!("У тебя уже максимум коллекций ({max}). Выйди из ненужной через /collection.")
     }
 

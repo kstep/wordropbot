@@ -40,7 +40,7 @@ impl Storage {
             return Ok(ImportSummary::default());
         }
         let mut transaction = self.begin_write().await?;
-        let mut word_count: i64 =
+        let mut word_count: u32 =
             sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
                 .bind(collection_id)
                 .fetch_one(&mut *transaction)
@@ -59,7 +59,7 @@ impl Storage {
             .await?;
             let word_id = match existing {
                 Some(id) => id,
-                None if word_count >= self.limits.max_words_per_collection as i64 => {
+                None if word_count >= self.limits.max_words_per_collection => {
                     summary.over_word_limit += 1;
                     continue;
                 }
@@ -89,12 +89,12 @@ impl Storage {
             if is_known {
                 continue;
             }
-            let translation_count: i64 =
+            let translation_count: u32 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM translations WHERE word_id = ?")
                     .bind(word_id)
                     .fetch_one(&mut *transaction)
                     .await?;
-            if translation_count >= self.limits.max_translations_per_word as i64 {
+            if translation_count >= self.limits.max_translations_per_word {
                 summary.over_translation_limit += 1;
                 continue;
             }
@@ -114,7 +114,7 @@ impl Storage {
         Ok(summary)
     }
 
-    pub async fn count_words(&self, collection_id: CollectionId) -> Result<i64, sqlx::Error> {
+    pub async fn count_words(&self, collection_id: CollectionId) -> Result<u32, sqlx::Error> {
         sqlx::query_scalar("SELECT COUNT(*) FROM words WHERE collection_id = ?")
             .bind(collection_id)
             .fetch_one(&self.pool)
