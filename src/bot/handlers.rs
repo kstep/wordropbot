@@ -50,7 +50,7 @@ const IMPORT_FORMAT: &str = "\
 const CODE_ATTEMPTS: usize = 5;
 const BUTTON_NAME_CHARS: usize = 30;
 /// Keeps one page within Telegram's limits on text and buttons.
-const COLLECTIONS_PAGE_SIZE: i64 = 10;
+const COLLECTIONS_PAGE_SIZE: u32 = 10;
 const NOT_MEMBER_NOTICE: &str = "Ты не участник этой коллекции.";
 const BUSY_NOTICE: &str = "Слишком много запросов, подожди немного.";
 const OPEN_QUIZ_NOTE: &str = "Сейчас открыт квиз: ответь на него, пришли заново через /quiz \
@@ -85,13 +85,18 @@ struct View {
 impl View {
     /// One page of the collection list; the page is clamped to the valid range.
     fn collections(collections: &[CollectionSummary], page: Page) -> View {
-        let total_pages = Page::count_for(collections.len() as i64, COLLECTIONS_PAGE_SIZE);
-        let page = page.clamped(total_pages);
+        let last = Page::last_for(collections.len(), COLLECTIONS_PAGE_SIZE);
+        let page = page.min(last);
         let mut text = String::new();
         let mut output = LimitedWriter::message(&mut text);
         // Writing to a String cannot fail.
-        let _ = if total_pages > 1 {
-            write!(output, "Твои коллекции, страница {page} из {total_pages}:")
+        let _ = if last > Page::FIRST {
+            write!(
+                output,
+                "Твои коллекции, страница {} из {}:",
+                page.number(),
+                last.number()
+            )
         } else {
             output.write_str("Твои коллекции:")
         };
@@ -122,7 +127,7 @@ impl View {
                 CallbackAction::LeaveAsk(collection.id).button("Выйти"),
             ]);
         }
-        let navigation = View::navigation(page, total_pages, CallbackAction::CollectionsPage);
+        let navigation = View::navigation(page, last, CallbackAction::CollectionsPage);
         if !navigation.is_empty() {
             rows.push(navigation);
         }
@@ -139,19 +144,17 @@ impl View {
             .iter()
             .position(|collection| collection.id == id)
             .unwrap_or(0);
-        Page::new(position as i64 / COLLECTIONS_PAGE_SIZE + 1)
+        Page::of_item(position, COLLECTIONS_PAGE_SIZE)
     }
 
     /// Buttons to the neighbouring pages that exist.
     fn navigation(
         page: Page,
-        total_pages: i64,
+        last: Page,
         action: fn(Page) -> CallbackAction,
     ) -> Vec<InlineKeyboardButton> {
         let previous = page.previous().map(|page| action(page).button("◀"));
-        let next = page
-            .next_within(total_pages)
-            .map(|page| action(page).button("▶"));
+        let next = page.next_within(last).map(|page| action(page).button("▶"));
         previous.into_iter().chain(next).collect()
     }
 
@@ -169,17 +172,17 @@ impl View {
                 keyboard: None,
             });
         }
-        let total_pages = Page::count_for(total, WORDS_PAGE_SIZE);
-        let page = page.clamped(total_pages);
+        let last = Page::last_for(total as usize, WORDS_PAGE_SIZE);
+        let page = page.min(last);
         let words = storage
             .list_words(collection, page.offset(WORDS_PAGE_SIZE), WORDS_PAGE_SIZE)
             .await?;
-        let row = View::navigation(page, total_pages, CallbackAction::WordsPage);
+        let row = View::navigation(page, last, CallbackAction::WordsPage);
         Ok(View {
             text: WordsPage {
                 words: &words,
                 page,
-                total_pages,
+                last,
             }
             .to_string(),
             keyboard: (!row.is_empty()).then(|| InlineKeyboardMarkup::new([row])),
@@ -804,7 +807,7 @@ mod tests {
             })
             .collect();
         let mut reachable = Vec::new();
-        for page in 1..=6 {
+        for page in 0..6 {
             let view = View::collections(&collections, Page::new(page));
             assert!(view.text.chars().count() <= 4096, "page {page}");
             let data = callback_data(&view);
@@ -825,19 +828,19 @@ mod tests {
             (0..25).map(|id| summary(id, "K7QM-3XPA", false)).collect();
         assert_eq!(
             View::collections_page_of(&collections, CollectionId(0)),
-            Page::new(1)
+            Page::FIRST
         );
         assert_eq!(
             View::collections_page_of(&collections, CollectionId(9)),
-            Page::new(1)
+            Page::FIRST
         );
         assert_eq!(
             View::collections_page_of(&collections, CollectionId(10)),
-            Page::new(2)
+            Page::new(1)
         );
         assert_eq!(
             View::collections_page_of(&collections, CollectionId(24)),
-            Page::new(3)
+            Page::new(2)
         );
     }
 }

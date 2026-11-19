@@ -6,7 +6,7 @@ use crate::{
     storage::{AnswerOutcome, CollectionStats, ImportSummary, WordView},
 };
 
-pub const WORDS_PAGE_SIZE: i64 = 20;
+pub const WORDS_PAGE_SIZE: u32 = 20;
 
 const MAX_BAD_LINES: usize = 20;
 /// Leaves room for the page header, so all lines of a full page fit one message
@@ -216,7 +216,7 @@ impl fmt::Display for WordLine<'_> {
 pub struct WordsPage<'a> {
     pub words: &'a [WordView],
     pub page: Page,
-    pub total_pages: i64,
+    pub last: Page,
 }
 
 impl fmt::Display for WordsPage<'_> {
@@ -225,7 +225,8 @@ impl fmt::Display for WordsPage<'_> {
         write!(
             output,
             "Слова, страница {} из {}:",
-            self.page, self.total_pages
+            self.page.number(),
+            self.last.number()
         )?;
         for word in self.words {
             write!(output, "\n{}", WordLine(word))?;
@@ -364,15 +365,15 @@ mod tests {
         let long = "щ".repeat(200);
         let words: Vec<_> = (0..WORDS_PAGE_SIZE)
             .map(|number| WordView {
-                id: WordId(number),
+                id: WordId(i64::from(number)),
                 term: format!("слово{number}"),
                 translations: vec![long.clone(); 20],
             })
             .collect();
         let text = WordsPage {
             words: &words,
-            page: Page::new(i64::MAX),
-            total_pages: i64::MAX,
+            page: Page::new(u32::MAX),
+            last: Page::new(u32::MAX),
         }
         .to_string();
         assert!(text.chars().count() <= 4096);
@@ -436,7 +437,7 @@ mod tests {
         let text = WordsPage {
             words: &words,
             page: Page::FIRST,
-            total_pages: 1,
+            last: Page::FIRST,
         }
         .to_string();
         assert!(text.contains("run — бежать, управлять"));

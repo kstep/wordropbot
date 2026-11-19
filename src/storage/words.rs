@@ -126,8 +126,8 @@ impl Storage {
     pub async fn list_words(
         &self,
         collection_id: CollectionId,
-        offset: i64,
-        limit: i64,
+        offset: u32,
+        limit: u32,
     ) -> Result<Vec<WordView>, sqlx::Error> {
         let rows: Vec<(WordId, String, Option<String>)> = sqlx::query_as(
             "SELECT w.id, w.term, t.text \
