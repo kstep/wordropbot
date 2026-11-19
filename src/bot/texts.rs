@@ -109,7 +109,7 @@ impl fmt::Display for NoActiveCollection {
 /// Writer that passes at most `max_chars` characters to `inner`: longer text
 /// keeps its first `max_chars - 1` characters and ends with an ellipsis. Text
 /// is written through as it comes, without buffering it.
-pub struct Truncating<W> {
+pub struct LimitedWriter<W> {
     inner: W,
     max_chars: usize,
     written: usize,
@@ -118,10 +118,10 @@ pub struct Truncating<W> {
     is_cut: bool,
 }
 
-impl<W: fmt::Write> Truncating<W> {
-    pub fn new(inner: W, max_chars: usize) -> Truncating<W> {
+impl<W: fmt::Write> LimitedWriter<W> {
+    pub fn new(inner: W, max_chars: usize) -> LimitedWriter<W> {
         debug_assert!(max_chars > 0);
-        Truncating {
+        LimitedWriter {
             inner,
             max_chars,
             written: 0,
@@ -131,8 +131,8 @@ impl<W: fmt::Write> Truncating<W> {
     }
 
     /// Telegram's message limit.
-    pub fn message(inner: W) -> Truncating<W> {
-        Truncating::new(inner, MAX_MESSAGE_CHARS)
+    pub fn message(inner: W) -> LimitedWriter<W> {
+        LimitedWriter::new(inner, MAX_MESSAGE_CHARS)
     }
 
     pub fn finish(mut self) -> fmt::Result {
@@ -144,11 +144,12 @@ impl<W: fmt::Write> Truncating<W> {
 
     fn cut(&mut self) -> fmt::Result {
         self.is_cut = true;
+        self.last = None;
         self.inner.write_char('…')
     }
 }
 
-impl<W: fmt::Write> fmt::Write for Truncating<W> {
+impl<W: fmt::Write> fmt::Write for LimitedWriter<W> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         if self.is_cut || text.is_empty() {
             return Ok(());
@@ -178,7 +179,7 @@ pub struct Truncated<'a>(pub &'a str);
 
 impl fmt::Display for Truncated<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut output = Truncating::message(formatter);
+        let mut output = LimitedWriter::message(formatter);
         output.write_str(self.0)?;
         output.finish()
     }
@@ -205,7 +206,7 @@ struct WordLine<'a>(&'a WordView);
 impl fmt::Display for WordLine<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let word = self.0;
-        let mut output = Truncating::new(formatter, MAX_WORD_LINE_CHARS);
+        let mut output = LimitedWriter::new(formatter, MAX_WORD_LINE_CHARS);
         write!(output, "{} — {}", word.term, Joined(&word.translations))?;
         output.finish()
     }
@@ -220,7 +221,7 @@ pub struct WordsPage<'a> {
 
 impl fmt::Display for WordsPage<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut output = Truncating::message(formatter);
+        let mut output = LimitedWriter::message(formatter);
         write!(
             output,
             "Слова, страница {} из {}:",
@@ -309,7 +310,7 @@ impl<'a> AnswerResult<'a> {
 impl fmt::Display for AnswerResult<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mark = if self.is_correct { "✅" } else { "❌" };
-        let mut output = Truncating::message(formatter);
+        let mut output = LimitedWriter::message(formatter);
         write!(
             output,
             "{mark} {} — {}",
@@ -377,6 +378,32 @@ mod tests {
         assert!(text.chars().count() <= 4096);
         for number in 0..WORDS_PAGE_SIZE {
             assert!(text.contains(&format!("\nслово{number} — ")), "{number}");
+        }
+    }
+
+    #[test]
+    fn truncating_writer_matches_cut_of_whole_text() {
+        let characters: Vec<char> = "аб".repeat(6).chars().collect();
+        let whole: String = characters.iter().collect();
+        for max_chars in 1..=characters.len() + 2 {
+            let expected: String = if characters.len() > max_chars {
+                characters[..max_chars - 1]
+                    .iter()
+                    .chain(['…'].iter())
+                    .collect()
+            } else {
+                whole.clone()
+            };
+            for chunk_size in 1..=characters.len() + 1 {
+                let mut text = String::new();
+                let mut output = LimitedWriter::new(&mut text, max_chars);
+                for chunk in characters.chunks(chunk_size) {
+                    output.write_str("").unwrap();
+                    output.write_str(&chunk.iter().collect::<String>()).unwrap();
+                }
+                output.finish().unwrap();
+                assert_eq!(text, expected, "max {max_chars}, chunk {chunk_size}");
+            }
         }
     }
 

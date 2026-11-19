@@ -3,10 +3,23 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde::Deserialize;
+
 use crate::period::Period;
 
 /// Unix seconds, UTC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    sqlx::Type
+)]
 #[sqlx(transparent)]
 pub struct Timestamp(i64);
 

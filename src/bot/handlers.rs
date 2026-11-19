@@ -23,8 +23,8 @@ use crate::{
         limiter::JoinLimiter,
         page::Page,
         texts::{
-            AnswerResult, Help, ImportReport, NoActiveCollection, NotEnoughWords, PAUSED_NOTE,
-            StatsReport, Truncating, WORDS_PAGE_SIZE, WordsPage,
+            AnswerResult, Help, ImportReport, LimitedWriter, NoActiveCollection, NotEnoughWords,
+            PAUSED_NOTE, StatsReport, WORDS_PAGE_SIZE, WordsPage,
         },
     },
     code::Code,
@@ -88,7 +88,7 @@ impl View {
         let total_pages = Page::count_for(collections.len() as i64, COLLECTIONS_PAGE_SIZE);
         let page = page.clamped(total_pages);
         let mut text = String::new();
-        let mut output = Truncating::message(&mut text);
+        let mut output = LimitedWriter::message(&mut text);
         // Writing to a String cannot fail.
         let _ = if total_pages > 1 {
             write!(output, "Твои коллекции, страница {page} из {total_pages}:")

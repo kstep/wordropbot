@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow, types::Json};
 
 use super::{CancelledQuiz, Storage};
@@ -22,12 +20,23 @@ macro_rules! member_words_filter {
     };
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Answers of quizzes `q`, oldest first, as a JSON array of `AnswerRecord`.
+macro_rules! answers_json {
+    () => {
+        "json_group_array(json_object('answered_at', q.answered_at, \
+         'is_correct', json(CASE WHEN q.is_correct THEN 'true' ELSE 'false' END)) \
+         ORDER BY q.id)"
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Candidate {
     pub word_id: WordId,
     pub collection_id: CollectionId,
     pub term: String,
+    #[sqlx(json)]
     pub translations: Vec<String>,
+    #[sqlx(json)]
     pub answers: Vec<AnswerRecord>,
 }
 
@@ -122,62 +131,22 @@ impl Storage {
     /// word.
     pub async fn candidates(&self, user_id: UserId) -> Result<Vec<Candidate>, sqlx::Error> {
         let collection_id: Option<CollectionId> = None;
-        let words: Vec<(WordId, CollectionId, String)> = sqlx::query_as(concat!(
-            "SELECT w.id, w.collection_id, w.term FROM words w ",
+        sqlx::query_as(concat!(
+            "SELECT w.id AS word_id, w.collection_id, w.term, \
+                    (SELECT json_group_array(t.text ORDER BY t.id) FROM translations t \
+                     WHERE t.word_id = w.id) AS translations, \
+                    (SELECT ",
+            answers_json!(),
+            " FROM quizzes q WHERE q.word_id = w.id AND q.user_id = ?1 \
+                     AND q.answered_at IS NOT NULL) AS answers \
+             FROM words w ",
             member_words_filter!(),
             "ORDER BY w.id",
         ))
         .bind(user_id)
         .bind(collection_id)
         .fetch_all(&self.pool)
-        .await?;
-        let mut loaded: Vec<Candidate> = Vec::with_capacity(words.len());
-        let mut by_word: HashMap<WordId, usize> = HashMap::with_capacity(words.len());
-        for (word_id, collection_id, term) in words {
-            by_word.insert(word_id, loaded.len());
-            loaded.push(Candidate {
-                word_id,
-                collection_id,
-                term,
-                translations: Vec::new(),
-                answers: Vec::new(),
-            });
-        }
-
-        let translations: Vec<(WordId, String)> = sqlx::query_as(concat!(
-            "SELECT t.word_id, t.text FROM translations t JOIN words w ON w.id = t.word_id ",
-            member_words_filter!(),
-            "ORDER BY t.id",
-        ))
-        .bind(user_id)
-        .bind(collection_id)
-        .fetch_all(&self.pool)
-        .await?;
-        for (word_id, text) in translations {
-            if let Some(&position) = by_word.get(&word_id) {
-                loaded[position].translations.push(text);
-            }
-        }
-
-        let answers: Vec<(WordId, Timestamp, bool)> = sqlx::query_as(concat!(
-            "SELECT q.word_id, q.answered_at, q.is_correct FROM quizzes q \
-             JOIN words w ON w.id = q.word_id ",
-            member_words_filter!(),
-            "AND q.user_id = ?1 AND q.answered_at IS NOT NULL ORDER BY q.id",
-        ))
-        .bind(user_id)
-        .bind(collection_id)
-        .fetch_all(&self.pool)
-        .await?;
-        for (word_id, answered_at, is_correct) in answers {
-            if let Some(&position) = by_word.get(&word_id) {
-                loaded[position].answers.push(AnswerRecord {
-                    answered_at,
-                    is_correct,
-                });
-            }
-        }
-        Ok(loaded)
+        .await
     }
 
     /// Whether some collection of the user holds at least `options` distinct
@@ -378,47 +347,25 @@ impl Storage {
         selection: &SelectionConfig,
     ) -> Result<CollectionStats, sqlx::Error> {
         let word_count = self.count_words(collection_id).await?;
-        let collection_id = Some(collection_id);
-        let rows: Vec<(WordId, Timestamp, bool)> = sqlx::query_as(concat!(
-            "SELECT q.word_id, q.answered_at, q.is_correct FROM quizzes q \
-             JOIN words w ON w.id = q.word_id ",
+        let rows: Vec<(String, String, Json<Vec<AnswerRecord>>)> = sqlx::query_as(concat!(
+            "SELECT w.term, w.term_norm, ",
+            answers_json!(),
+            " FROM quizzes q JOIN words w ON w.id = q.word_id ",
             member_words_filter!(),
-            "AND q.user_id = ?1 AND q.answered_at IS NOT NULL ORDER BY q.id",
+            "AND q.user_id = ?1 AND q.answered_at IS NOT NULL GROUP BY w.id",
         ))
         .bind(user_id)
-        .bind(collection_id)
+        .bind(Some(collection_id))
         .fetch_all(&self.pool)
         .await?;
-        let answered = rows.len() as i64;
-        let correct = rows
-            .iter()
-            .filter(|&&(_, _, is_correct)| is_correct)
-            .count() as i64;
-        let mut answers: HashMap<WordId, Vec<AnswerRecord>> = HashMap::new();
-        for (word_id, answered_at, is_correct) in rows {
-            answers.entry(word_id).or_default().push(AnswerRecord {
-                answered_at,
-                is_correct,
-            });
+        let (mut answered, mut correct) = (0, 0);
+        // The normalized term breaks error-rate ties.
+        let mut ranked: Vec<(f64, String, String)> = Vec::with_capacity(rows.len());
+        for (term, term_norm, Json(answers)) in rows {
+            answered += answers.len() as i64;
+            correct += answers.iter().filter(|answer| answer.is_correct).count() as i64;
+            ranked.push((selection.error_rate(&answers, now), term_norm, term));
         }
-        // Only answered words: their normalized term breaks error-rate ties.
-        let words: Vec<(WordId, String, String)> = sqlx::query_as(concat!(
-            "SELECT w.id, w.term, w.term_norm FROM words w ",
-            member_words_filter!(),
-            "AND EXISTS (SELECT 1 FROM quizzes q WHERE q.word_id = w.id \
-             AND q.user_id = ?1 AND q.answered_at IS NOT NULL)",
-        ))
-        .bind(user_id)
-        .bind(collection_id)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut ranked: Vec<(f64, String, String)> = words
-            .into_iter()
-            .filter_map(|(word_id, term, term_norm)| {
-                let word_answers = answers.get(&word_id)?;
-                Some((selection.error_rate(word_answers, now), term_norm, term))
-            })
-            .collect();
         ranked.sort_by(|left, right| {
             right
                 .0

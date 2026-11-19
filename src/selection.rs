@@ -2,12 +2,13 @@ use rand::{
     Rng,
     distr::{Distribution, weighted::WeightedIndex},
 };
+use serde::Deserialize;
 
 use crate::{config::SelectionConfig, time::Timestamp};
 
 const SECS_PER_DAY: f64 = 86_400.0;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct AnswerRecord {
     pub answered_at: Timestamp,
     pub is_correct: bool,
