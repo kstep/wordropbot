@@ -44,16 +44,14 @@ impl FromStr for Code {
 
     /// Case, surrounding whitespace and the dash are ignored.
     fn from_str(input: &str) -> Result<Code, ParseCodeError> {
-        let symbols = input
+        let mut symbols = input
             .trim()
             .chars()
             .filter(|&character| character != '-')
             .map(|character| character.to_ascii_uppercase());
-        if symbols.clone().count() != 2 * HALF {
-            return Err(ParseCodeError::InvalidLength);
-        }
         let mut code = String::with_capacity(2 * HALF + 1);
-        for (index, symbol) in symbols.enumerate() {
+        for index in 0..2 * HALF {
+            let symbol = symbols.next().ok_or(ParseCodeError::InvalidLength)?;
             if !u8::try_from(symbol).is_ok_and(|byte| ALPHABET.contains(&byte)) {
                 return Err(ParseCodeError::InvalidCharacter);
             }
@@ -61,6 +59,9 @@ impl FromStr for Code {
                 code.push('-');
             }
             code.push(symbol);
+        }
+        if symbols.next().is_some() {
+            return Err(ParseCodeError::InvalidLength);
         }
         Ok(Code(code))
     }
