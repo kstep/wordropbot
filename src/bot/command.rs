@@ -1,5 +1,23 @@
 use std::str::FromStr;
 
+/// Commands Telegram suggests when the user types `/`, with their
+/// descriptions.
+pub const MENU: [(&str, &str); 10] = [
+    (
+        "collection",
+        "Коллекции: список, new <название>, подключение по коду",
+    ),
+    ("words", "Слова активной коллекции"),
+    ("quiz", "Прислать квиз сейчас"),
+    ("skip", "Отменить открытый квиз без ошибки"),
+    ("stats", "Статистика активной коллекции"),
+    ("remove", "Удалить слово: /remove <слово>"),
+    ("period", "Как часто присылать квизы: /period 1d"),
+    ("pause", "Приостановить квизы"),
+    ("resume", "Возобновить квизы"),
+    ("help", "Справка"),
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Start,
@@ -79,6 +97,19 @@ impl FromStr for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_names_known_commands() {
+        for (name, description) in MENU {
+            assert!(
+                name.len() <= 32 && name.bytes().all(|byte| byte.is_ascii_lowercase()),
+                "{name}"
+            );
+            assert!((1..=256).contains(&description.chars().count()), "{name}");
+            let command: Command = format!("/{name} x").parse().unwrap();
+            assert_ne!(command, Command::Unknown, "{name}");
+        }
+    }
 
     fn parse(text: &str) -> Result<Command, ParseCommandError> {
         text.parse::<Command>()

@@ -14,12 +14,12 @@ use teloxide::{
     dispatching::ShutdownToken,
     errors::ApiError,
     prelude::*,
-    types::{InlineKeyboardMarkup, MessageId as TgMessageId},
+    types::{BotCommand, InlineKeyboardMarkup, MessageId as TgMessageId},
     update_listeners,
 };
 
 use crate::{
-    bot::{callback::CallbackAction, handlers::Handlers},
+    bot::{callback::CallbackAction, command::MENU, handlers::Handlers},
     config::Config,
     ids::{MessageId, QuizId, UserId},
     scheduler::Scheduler,
@@ -153,6 +153,13 @@ impl BotApp {
 
     /// Fails if Telegram cannot be reached at start (bad token, no network).
     pub async fn run(mut self) -> Result<(), RequestError> {
+        let menu = MENU
+            .iter()
+            .map(|&(name, description)| BotCommand::new(name, description));
+        // The bot works without the menu, so a failure is only logged.
+        if let Err(error) = self.bot.set_my_commands(menu).await {
+            tracing::warn!(%error, "setting command menu failed");
+        }
         let listener = update_listeners::polling_default(self.bot.clone()).await;
         let errors = LoggingErrorHandler::with_custom_text("An error from the update listener");
         self.dispatcher
