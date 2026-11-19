@@ -20,7 +20,8 @@ pub const MENU: [(&str, &str); 10] = [
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    Start,
+    /// `/start`, with a collection code when opened through an invite link.
+    Start(Option<String>),
     Help,
     CollectionList,
     CollectionNew(String),
@@ -78,7 +79,7 @@ impl FromStr for Command {
             }
         };
         Ok(match name.to_lowercase().as_str() {
-            "start" => Command::Start,
+            "start" => Command::Start((!argument.is_empty()).then(|| argument.to_owned())),
             "help" => Command::Help,
             "collection" => Command::collection(argument),
             "words" => Command::Words,
@@ -97,6 +98,15 @@ impl FromStr for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_carries_invite_code() {
+        assert_eq!("/start".parse(), Ok(Command::Start(None)));
+        assert_eq!(
+            "/start 5UA9-YC7S".parse(),
+            Ok(Command::Start(Some("5UA9-YC7S".into())))
+        );
+    }
 
     #[test]
     fn menu_names_known_commands() {

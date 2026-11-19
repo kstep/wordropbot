@@ -15,6 +15,7 @@ use teloxide::{
         MessageId as TgMessageId,
     },
 };
+use tokio::sync::OnceCell;
 
 use crate::{
     bot::{
@@ -114,7 +115,8 @@ impl View {
     }
 
     /// One page of the collection list; the page is clamped to the valid range.
-    fn collections(collections: &[CollectionSummary], page: Page) -> View {
+    /// With the bot's username each collection gets its invite link.
+    fn collections(collections: &[CollectionSummary], page: Page, bot: Option<&str>) -> View {
         let last = Page::last_for(collections.len(), COLLECTIONS_PAGE_SIZE);
         let page = page.min(last);
         let start = (page.offset(COLLECTIONS_PAGE_SIZE) as usize).min(collections.len());
@@ -143,6 +145,9 @@ impl View {
             );
             view.push_code(collection.code.as_str());
             let _ = write!(view.text, ", слов: {}{mark}", collection.word_count);
+            if let Some(bot) = bot {
+                let _ = write!(view.text, "\n{}", invite_link(bot, &collection.code));
+            }
             let name = first_chars(&collection.name, BUTTON_NAME_CHARS);
             rows.push(vec![
                 CallbackAction::Activate(collection.id).button(format!("Выбрать «{name}»")),
@@ -202,6 +207,11 @@ impl View {
     }
 }
 
+/// Link that opens the bot and joins the collection with `code`.
+fn invite_link(bot: &str, code: &Code) -> String {
+    format!("https://t.me/{bot}?start={code}")
+}
+
 /// The first `max_chars` characters of `text`.
 fn first_chars(text: &str, max_chars: usize) -> &str {
     let end = text
@@ -218,6 +228,7 @@ pub struct Handlers {
     config: Arc<Config>,
     limiter: Mutex<JoinLimiter>,
     gate: Arc<UserGate>,
+    username: OnceCell<String>,
 }
 
 impl Handlers {
@@ -236,6 +247,25 @@ impl Handlers {
             config,
             limiter,
             gate,
+            username: OnceCell::new(),
+        }
+    }
+
+    /// The bot's username for invite links, asked from Telegram once. Without
+    /// it messages go out with no links.
+    async fn bot_username(&self) -> Option<&str> {
+        let username = self
+            .username
+            .get_or_try_init(|| async {
+                Ok::<_, RequestError>(self.bot.get_me().await?.username().to_owned())
+            })
+            .await;
+        match username {
+            Ok(username) => Some(username),
+            Err(error) => {
+                tracing::warn!(%error, "getting bot username failed");
+                None
+            }
         }
     }
 
@@ -302,7 +332,12 @@ impl Handlers {
         let Some(text) = text else { return Ok(()) };
         let command: Result<Command, _> = text.parse();
         match command {
-            Ok(Command::Start) => self.help(user.id, user.paused).await,
+            Ok(Command::Start(code)) => {
+                if let Some(code) = code {
+                    self.collection_join(user.id, &code).await?;
+                }
+                self.help(user.id, user.paused).await
+            }
             Ok(Command::Help | Command::Unknown) => self.help(user.id, false).await,
             Ok(Command::CollectionList) => self.collection_list(user.id).await,
             Ok(Command::CollectionNew(name)) => self.collection_new(user.id, &name).await,
@@ -378,6 +413,10 @@ impl Handlers {
                 collection.name
             ));
             view.push_code(collection.code.as_str());
+            if let Some(bot) = self.bot_username().await {
+                let link = invite_link(bot, &collection.code);
+                let _ = write!(view.text, "\nСсылка для друзей: {link}");
+            }
             view.text.push_str("\n\n");
             view.text.push_str(IMPORT_FORMAT);
             // The collection is saved: the apology path would invite a retry
@@ -429,7 +468,7 @@ impl Handlers {
         if collections.is_empty() {
             return self.no_collection(user).await;
         }
-        let view = View::collections(&collections, Page::FIRST);
+        let view = View::collections(&collections, Page::FIRST, self.bot_username().await);
         self.show(user, view).await
     }
 
@@ -588,7 +627,7 @@ impl Handlers {
     async fn refresh_collections(&self, press: Press, id: CollectionId) -> Reply {
         let collections = self.storage.list_collections(press.user).await?;
         let page = View::collections_page_of(&collections, id);
-        let view = View::collections(&collections, page);
+        let view = View::collections(&collections, page, self.bot_username().await);
         self.edit(press, view).await
     }
 
@@ -597,7 +636,7 @@ impl Handlers {
         if collections.is_empty() {
             return Ok(Some("У тебя нет коллекций."));
         }
-        let view = View::collections(&collections, page);
+        let view = View::collections(&collections, page, self.bot_username().await);
         self.edit(press, view).await?;
         Ok(None)
     }
@@ -823,6 +862,7 @@ mod tests {
                 summary(2, "K7QM-3XPB", true),
             ],
             Page::FIRST,
+            None,
         );
         let lines: Vec<&str> = view.text.lines().collect();
         assert!(!lines[1].contains("(активная)"));
@@ -839,7 +879,8 @@ mod tests {
             .collect();
         let mut reachable = Vec::new();
         for page in 0..6 {
-            let view = View::collections(&collections, Page::new(page));
+            // Telegram usernames have at most 32 characters.
+            let view = View::collections(&collections, Page::new(page), Some(&"b".repeat(32)));
             assert!(view.text.chars().count() <= 4096, "page {page}");
             let data = callback_data(&view);
             assert!(data.len() <= 100, "page {page}");
@@ -849,7 +890,7 @@ mod tests {
             assert!(reachable.contains(&format!("c:{id}")), "activate {id}");
             assert!(reachable.contains(&format!("l:{id}")), "leave {id}");
         }
-        let last = View::collections(&collections, Page::new(99));
+        let last = View::collections(&collections, Page::new(99), None);
         assert!(callback_data(&last).contains(&"c:59".to_owned()));
     }
 
@@ -868,7 +909,13 @@ mod tests {
                 )
             })
             .collect();
-        let view = View::collections(&collections, Page::new(1));
+        let view = View::collections(&collections, Page::new(1), Some("wordropbot"));
+        assert!(
+            view.text
+                .contains("\nhttps://t.me/wordropbot?start=K7QM-3XPA"),
+            "{}",
+            view.text
+        );
         let Markup::Entities(entities) = &view.markup else {
             panic!("collection list must be plain text");
         };
